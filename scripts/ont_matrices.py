@@ -44,7 +44,7 @@ def process_matrix(matrix, features, cells, min_features=200, min_cells=3, max_m
     selected_features = [name for name, keep in zip(features, feature_mask) if keep]
     selected_cells = [name for name, keep in zip(cells, cell_mask) if keep]
     filtered = matrix[feature_mask, :][:, cell_mask].astype(float).tocsr()
-    if filtered.shape[0] and filtered.shape[1]:
+    if filtered.shape[1]:
         totals = np.asarray(filtered.sum(axis=0)).ravel()
         mito = [any(prefix in name for prefix in mito_prefixes) for name in selected_features]
         mito_counts = np.asarray(filtered[mito, :].sum(axis=0)).ravel()

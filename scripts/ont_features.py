@@ -250,16 +250,34 @@ def split_annotation(gtf, root):
 
 
 def reference_transcripts(gtf):
-    result = {}
+    transcripts, gene_names, exon_names = {}, {}, {}
     with open_text(gtf) as handle:
         for line in handle:
             if line.startswith("#") or not line.strip():
                 continue
             fields = line.rstrip("\n").split("\t")
             attr = attributes(fields[8])
+            feature = fields[2].lower()
+            gene_id = attr.get("gene_id")
+            if gene_id in {"", "-", ".", "NA"}:
+                gene_id = None
+            name = next((attr[key] for key in ("gene_name", "genename")
+                         if attr.get(key) not in {None, "", "-", ".", "NA"}), None)
+            if gene_id and name:
+                if feature == "gene":
+                    gene_names.setdefault(gene_id, name)
+                elif feature == "exon":
+                    exon_names.setdefault(gene_id, name)
             tx = attr.get("transcript_id")
-            if tx and fields[2].lower() in {"transcript", "mrna"}:
-                result[tx] = attr.get("gene_name", attr.get("genename", "-")) or "-"
+            if tx and feature in {"transcript", "mrna"}:
+                transcripts[tx] = (gene_id, name)
+    result = {}
+    # Resolve after the full scan: gene/exon names may follow transcript records.
+    for tx, (gene_id, name) in transcripts.items():
+        gene = name or gene_names.get(gene_id) or exon_names.get(gene_id) or gene_id
+        if not gene:
+            raise ValueError(f"Reference transcript {tx} has no gene_name or gene_id in {gtf}")
+        result[tx] = gene
     return result
 
 
@@ -524,7 +542,7 @@ def run(args):
             feature_paths = {}
             annotations = split_annotation(args.gtf, root)
             if not reference_transcripts(args.gtf):
-                raise ValueError("ONT feature assignment requires reference transcript/mRNA records with transcript_id and gene_name in the GTF")
+                raise ValueError("ONT feature assignment requires reference transcript/mRNA records with transcript_id and gene_name or gene_id in the GTF")
             with pysam.AlignmentFile(args.bam, "rb") as bam:
                 mapped = {s.contig for s in bam.get_index_statistics() if s.mapped}
             transcriptome_fa = out / f"{args.sample}.transcriptome.fa.gz"

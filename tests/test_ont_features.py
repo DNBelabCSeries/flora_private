@@ -75,6 +75,73 @@ class OntSelectionTests(unittest.TestCase):
             self.assertEqual(result["intron"], ("G", "-"))
             self.assertEqual(result["known"], ("G", "T"))
 
+    def test_reference_gene_name_can_come_from_gene_or_exon_records(self):
+        for feature in ("gene", "exon"):
+            for name_first in (True, False):
+                with self.subTest(feature=feature, name_first=name_first), tempfile.TemporaryDirectory() as temp:
+                    gtf = Path(temp) / "ref.gtf"
+                    transcript = 'chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; transcript_id "T";\n'
+                    named = f'chr1\tx\t{feature}\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "GENE_A";\n'
+                    gtf.write_text(named + transcript if name_first else transcript + named)
+                    self.assertEqual(self.mod.reference_transcripts(gtf), {"T": "GENE_A"})
+
+    def test_reference_uses_gene_id_when_no_gene_name_is_available(self):
+        for name in ('', 'gene_name "";', 'gene_name "-";', 'gene_name ".";'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                gtf = Path(temp) / "ref.gtf"
+                gtf.write_text(f'chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; transcript_id "T"; {name}\n')
+                self.assertEqual(self.mod.reference_transcripts(gtf), {"T": "G1"})
+
+    def test_reference_preserves_explicit_transcript_gene_name(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gtf = Path(temp) / "ref.gtf"
+            gtf.write_text('chr1\tx\tgene\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "OTHER";\n'
+                           'chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "GENE_A"; transcript_id "T";\n')
+            self.assertEqual(self.mod.reference_transcripts(gtf), {"T": "GENE_A"})
+
+    def test_reference_fallback_prefers_gene_over_exon_and_other_transcript_names(self):
+        alias = 'chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "ALIAS"; transcript_id "T1";\n'
+        gene = 'chr1\tx\tgene\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "CANONICAL";\n'
+        exon = 'chr1\tx\texon\t1\t100\t.\t+\t.\tgene_id "G1"; gene_name "EXON_NAME"; transcript_id "T2";\n'
+        unnamed = 'chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; transcript_id "T2";\n'
+        for lines in ((alias, exon, gene, unnamed), (gene, unnamed, exon, alias), (exon, unnamed, alias, gene)):
+            with self.subTest(lines=lines), tempfile.TemporaryDirectory() as temp:
+                gtf = Path(temp) / "ref.gtf"
+                gtf.write_text("".join(lines))
+                self.assertEqual(self.mod.reference_transcripts(gtf), {"T1": "ALIAS", "T2": "CANONICAL"})
+
+    def test_reference_rejects_transcript_without_gene_identifiers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gtf = Path(temp) / "ref.gtf"
+            gtf.write_text('chr1\tx\ttranscript\t1\t100\t.\t+\t.\ttranscript_id "T";\n')
+            with self.assertRaisesRegex(ValueError, "T"):
+                self.mod.reference_transcripts(gtf)
+
+    def test_gene_id_only_candidate_is_written_as_assigned(self):
+        import pysam
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            gtf, tmap = root / "ref.gtf", root / "query.tmap"
+            gtf.write_text('chr1\tx\ttranscript\t1\t100\t.\t+\t.\tgene_id "G1"; transcript_id "T";\n')
+            tmap.write_text("qry_id\tref_id\tclass_code\nassembled\tT\t=\n")
+            gene, transcript = self.mod.load_candidates(tmap, gtf)["assembled"]
+            selected = self.mod.select_features([self.hit(gene=gene, transcript=transcript)], 60)
+            bam = root / "input.bam"
+            header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 1000}]}
+            with pysam.AlignmentFile(bam, "wb", header=header) as out:
+                record = pysam.AlignedSegment(out.header)
+                record.query_name, record.query_sequence = "read1", "A" * 50
+                record.reference_id, record.reference_start = 0, 0
+                record.cigarstring, record.mapping_quality = "50M", 60
+                out.write(record)
+            with sqlite3.connect(":memory:") as db:
+                db.execute("CREATE TABLE features(chrom,read_id,gene,transcript,reason)")
+                db.execute("INSERT INTO features VALUES (?,?,?,?,?)", ("chr1", "read1", *selected, "candidate"))
+                genes, tx = root / "genes.tsv", root / "tx.tsv"
+                self.mod.write_tagged_assignments(db, bam, root / "output.bam", genes, tx, 30, 1)
+                self.assertEqual(genes.read_text(), "read1\tAssigned\t60\tG1\n")
+                self.assertEqual(tx.read_text(), "read1\tAssigned\t60\tG1\tT\n")
+
     def test_tagging_uses_primary_chromosome_and_preserves_transcript_only_reads(self):
         import pysam
         with tempfile.TemporaryDirectory() as temp:
