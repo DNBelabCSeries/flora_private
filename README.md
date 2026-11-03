@@ -3,289 +3,69 @@
 
 # Flora Private Development Repository
 
-This repository contains the private source, tests, packaging tools, and release documentation for Flora. Do not mirror or push this repository to the public `brilliantlee2/Flora` repository.
-
-The public repository contains user documentation only. Compiled archives are distributed through GitHub Releases.
+Private source, tests, and packaging tools for Flora. Keep this repository
+private. The public `brilliantlee2/Flora` repository contains user documentation;
+binary archives are distributed through GitHub Releases.
 
 ## Clone the private repository
 
-You must have access to the private `brilliantlee2/flora_private` repository.
-Clone it with HTTPS:
-
 ```bash
-git clone https://github.com/brilliantlee2/flora_private.git
+git clone --branch codex/1028-ont-v330-performance --single-branch \
+  https://github.com/brilliantlee2/flora_private.git
 cd flora_private
 ```
 
-Or use SSH after adding an SSH key to your GitHub account:
-
-```bash
-git clone git@github.com:brilliantlee2/flora_private.git
-cd flora_private
-```
-
-Because this is a private repository, GitHub may request browser authorization,
-a personal access token, or an authorized SSH key. The repository includes the
-patched crates under `vendor/`; no additional Git submodule command is needed.
-
-## Source layout
-
-```text
-Cargo.toml / Cargo.lock       Rust package and locked dependencies
-src/                          Flora and integrated Glycine Rust source
-vendor/                       Patched rust-htslib and edlib_rs
-scripts/                      Python analysis, QC, plotting, and report source
-run_all.sh                    Private single-species regression baseline
-run_all_mixed_species.sh      Private mixed-species regression baseline
-environment.yml               Private build and test environment
-environment.runtime.yml       Public binary runtime environment
-packaging/                    Release packaging tools
-tests/                        Rust/Python/release tests
-docs/repository-templates/    Public/private GitHub documentation
-```
+Access to the private repository is required. Use a GitHub token or authorized
+SSH key; the SSH URL is `git@github.com:brilliantlee2/flora_private.git`.
+Patched dependencies are included in `vendor/`; no submodule setup is needed.
 
 ## Build environment
 
-```bash
-export LANG=C.UTF-8
-export LC_ALL=C.UTF-8
-export PYTHONUTF8=1
-
-conda env create -f environment.yml
-conda activate flora
-```
-
-The private environment includes Python 3.11, Rust/Cargo, GCC/G++, Clang/libclang, CMake, samtools, minimap2, bedtools, StringTie2, gffread, gffcompare, and all Python dependencies.
-
-Before the first Rust build, locate Conda's libclang and export its directory.
-This is required by `bindgen` while compiling `rust-htslib`; it is a build-time
-requirement and is not needed when running a packaged Flora executable.
-
-```bash
-LIBCLANG_SO="$(find "$CONDA_PREFIX/lib" -maxdepth 1 -type f \
-  \( -name 'libclang.so' -o -name 'libclang.so.*' \) -print -quit)"
-test -n "$LIBCLANG_SO" || {
-  echo "libclang was not found; update the environment.yml environment" >&2
-  exit 1
-}
-export LIBCLANG_PATH="$(dirname "$LIBCLANG_SO")"
-echo "LIBCLANG_PATH=$LIBCLANG_PATH"
-```
-
-Run the same export after each new shell activation, or persist it for this
-Conda environment and then reactivate the environment:
-
-```bash
-conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"
-conda deactivate
-conda activate flora
-```
-
-Verify the toolchain once before building:
-
-```bash
-python --version
-rustc --version
-cargo --version
-cmake --version
-gcc --version
-clang --version
-test -n "$LIBCLANG_PATH"
-ls "$LIBCLANG_PATH"/libclang.so* >/dev/null
-```
-
-Python must report `3.11.x`. If the environment already exists, update it with
-`conda env update -n flora -f environment.yml --prune`, reactivate it, and run
-the libclang setup above again.
-
-## Development build and tests
-
-```bash
-cargo build --release --locked
-cargo test --locked
-bash -n run_all.sh run_all_mixed_species.sh packaging/build_binary_release.sh
-python -m unittest discover -s tests -v
-```
-
-Verify the main CLI:
-
-```bash
-./target/release/flora --version
-./target/release/flora glycine --help
-./target/release/flora analyze --help
-bash run_all.sh -h
-```
-
-The full workflow accepts multiple paths after one `--fastq`, or a
-non-recursive `--fastq-dir`. Parallel Glycine defaults are 10 concurrent jobs
-sharing 64 total threads; verify these options in `flora --help` after changes.
-
-Before producing a single-binary public release, `flora run --help` and
-`flora run-mixed --help` must also succeed. The packaging script deliberately
-stops when either command is unavailable.
-
-## Workflow output policy
-
-### Performance comparison branch
-
-This branch retains the v3.3.0 feature-selection and UMI rules, but uses bounded
-batch joins, native pysam quality conversion and buffered FASTQ writes. No new
-runtime packages are required. New optional workflow arguments:
-
-```bash
---ont-temp-dir /local_scratch/flora_tmp \
---ont-jobs 2 \
---cluster-threads 32
-```
-
-Use an existing writable local SSD with sufficient free space. Without
-`--ont-temp-dir`, scratch uses the system temp directory (`TMPDIR` when set),
-not the results directory; on some HPC hosts `/tmp` is small or memory-backed.
-Only temporary data is placed there, and it is removed after the stage.
-Saved intermediates still go under the result's `transcriptome/intermediates/`.
-Do not change temporary files while a job is running.
-
-`--ont-jobs` defaults to 1 to avoid raising peak memory. Effective concurrency is
-capped at `max(1, cluster-threads / 8)` and each job receives a share of that
-thread budget. Tool main/I/O helper threads may be additional. Each job has its
-own assembly, alignment and database memory; increase concurrency only after
-checking available RAM and scratch space. Results merge in annotation order,
-not task-completion order. Logs now distinguish feature assignment, index registration,
-final BAM/TSV output and indexing; nested timings must not be added twice.
-
-The second round also reuses terminal coordinates from initial barcode extraction
-via an anonymous disk cache (16 bytes/input read, about 1.49 GiB per 100 million
-reads). It follows `--ont-temp-dir`/`TMPDIR`, is removed automatically, and does
-not add a sample-sized RAM array or new CSV columns. Read QC runs in ordered
-parallel chunks. cDNA output still rereads/decompresses the input, but no longer
-repeats terminal searches or copies trimmed sequence strings. Feature databases
-are queried directly per chromosome without copying all rows into a second
-global index; chromosome MAPQ scratch is deleted after assignment. Intermediate
-BAM fusion remains deferred. Details and measured validation:
-[performance record](docs/ont-v330-performance.md).
-
-This branch defaults to `--feature-backend ont`, using the feature assignment
-rules from a historical [wf-single-cell 3.3.0 source snapshot](https://github.com/epi2me-labs/wf-single-cell/tree/d46f92121c79c28a02105cf2444029e91dc4b609).
-ONT withdrew that release for critical issues and its tag is unavailable.
-This comparison branch fixes the source commit above and StringTie 2.2.2;
-it does not claim to recover the deleted release tag. The existing 3.3.4
-comparison branch is separate. Core mapping/feature-selection rules are the
-same between the inspected 3.3.0 snapshot and 3.3.4, so changing the version
-alone does not imply higher gene/transcript assignment rates.
-Use a separate environment when comparing with the 3.3.4 branch:
+Run these commands from the repository root on Linux x86_64:
 
 ```bash
 conda env create -n flora-ont330 -f environment.yml
 conda activate flora-ont330
-stringtie --version
-gffread --version
-gffcompare --version
-PYTHON_BIN="$CONDA_PREFIX/bin/python" bash packaging/build_binary_release.sh
+
+export LANG=C.UTF-8
+export LC_ALL=C.UTF-8
+export PYTHONUTF8=1
 ```
 
-If it already exists, use `conda env update -n flora-ont330 -f environment.yml`.
+For an existing environment, use `conda env update -n flora-ont330 -f environment.yml`
+instead of creating it, then reactivate it. Use Python 3.11.x.
+`environment.yml` includes the build tools and runtime dependencies;
+`environment.runtime.yml` is for packaged executables, and `requirements.txt`
+lists Python packages only. This branch also requires StringTie 2.2.2,
+`gffread`, and `gffcompare`, already included in both environment files. Keep
+`flora-ont330` separate from the environment used for main or other ONT versions.
 
-The backend builds a guided sample transcriptome per chromosome, remaps reads
-to that transcriptome, then selects gene/transcript labels by alignment score
-and coverage. Genomic MAPQ >=30 gates genes; transcript labels use separate
-transcriptome evidence. Novel assembled transcripts are exported but only
-reference-linked transcripts are counted, following the ONT assignment model.
-Glycine, dual-end barcode/UMI extraction and Flora cell assignment are retained.
-This is an independent implementation, not an execution of ONT Nextflow; exact
-ONT numerical equivalence is not promised. See [implementation details](docs/ont-v3.3.0-alignment.md).
-In particular, Flora does not apply the old ONT 10x-specific fixed UMI-length
-filter or recreate Visium HD/reporting bugs. Its UMI representation, QC,
-saturation, and report retain Flora's definitions.
-
-Use the usual Flora command for the new backend. Add `--feature-backend legacy`
-to compare with the previous GTF-overlap backend, using a different output
-directory. `--transcript-assign-mapq` and `--gene-tagging-backend` select behavior
-only in legacy mode. `--skip-isoform` skips transcript matrices, while assembly
-still runs for ONT gene assignment. `--stringtie-opts '-c 2'` changes assembly
-options. ONT mode defaults to no per-cell/gene read truncation;
-`--cell-gene-max-reads 0` means unlimited.
-
-New outputs include `transcriptome/<sample>.transcriptome.fa.gz` and
-`.transcriptome.gtf.gz`, actual `tool_versions.json`, and
-`assignment_summary.json`. Original TSV matrices remain available. Gene and
-transcript raw/processed MEX directories are also written under `matrix/`.
-Raw MEX values are integer UMI counts; processed values are
-`log10(1 + normalized_count)`, with target 10,000 counts/cell, minimum 200
-features/cell and 3 cells/feature, and maximum 20% mitochondrial counts.
-Both `MT-` and `mt-` identifiers are recognized for human/mouse compatibility.
-The HTML report continues to describe Flora's original cell calls, not the
-additional processed-MEX cell filtering. Processing details are recorded in
-`<sample>.matrix_processing.json`. Large temporary transcriptome alignment BAMs
-are retained only with `--save-intermediate` or `--full-output`.
-
-The default light-output mode retains the final tagged BAM and index, gene and
-isoform expression matrices, cell/barcode mapping, RNA clustering results, QC
-tables, `qc/metrics_summary.xlsx`, logs, and the self-contained HTML
-report. After the report is built successfully, Flora removes reproducible
-read-level tables, the pre-tagging aligned BAM, assignment TSVs, and other
-large intermediates. If cleanup leaves `alignment/` empty, that directory is
-removed as well.
-
-Use `--save-intermediate` when debugging or when read-level assignment and
-pre-tagging files are required. Use `--full-output` when all upstream FASTQ
-outputs and intermediates must be retained. Neither option changes analytical
-thresholds or the final matrices; they only control retained files.
-
-Add `--remove-final-bam` to remove every BAM and BAM index under `alignment/`
-and `matrix/` after matrices, QC, and the report complete successfully. This
-also removes the final tagged BAM, while retaining expression matrices, QC,
-`metrics_summary.xlsx`, and the HTML report. The option can be combined with
-`--save-intermediate` or `--full-output`; non-BAM intermediates still follow
-those options.
-
-## Version update checklist
-
-1. Update the package version in `Cargo.toml`.
-2. Run `cargo check` or `cargo build --release` to update `Cargo.lock`.
-3. Update release URLs and version text in the public README templates.
-4. Add `docs/repository-templates/public/RELEASE_NOTES_vX.Y.Z.md`.
-5. Run all tests before packaging.
-
-Flora follows semantic versioning. Use versions such as `0.1.0`, `0.1.1`, and `0.2.0`.
-
-## Build the Linux x86_64 release
-
-Build on Linux x86_64, preferably the target HPC. Do not build the public Linux
-archive on macOS. The following sequence starts from a fresh clone.
-
-### 1. Enter the repository and check the host
+Before compiling, locate libclang for `rust-htslib`/`bindgen`. This is only a
+build dependency, not a requirement for running the packaged executable.
 
 ```bash
-cd /path/to/flora_private
-
-uname -s
-uname -m
-ldd --version | head -n 1
+LIBCLANG_SO="$(find -L "$CONDA_PREFIX/lib" -maxdepth 1 -type f \
+  \( -name 'libclang.so' -o -name 'libclang.so.*' \) -print -quit)"
+if [[ -n "$LIBCLANG_SO" ]]; then
+  export LIBCLANG_PATH="$(dirname "$LIBCLANG_SO")"
+  echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+else
+  unset LIBCLANG_PATH
+  echo "libclang not found. Update the Conda environment before building." >&2
+fi
 ```
 
-Expected architecture:
+If not found, run `conda install -c conda-forge libclang`, then repeat the
+lookup. Do not continue building until it succeeds. This example does not exit
+your interactive SSH shell. Repeat the setup after opening a new shell, or
+persist a successful value with
+`conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"` and reactivate `flora-ont330`.
 
-```text
-Linux
-x86_64
-```
+## Development build and tests
 
-### 2. Prepare the build environment
-
-Create or update the Conda environment and configure `LIBCLANG_PATH` by
-following [Build environment](#build-environment). Then verify the runtime
-tools used by the workflow:
+Run the following checks once for each source revision you intend to package:
 
 ```bash
-samtools --version | head -n 2
-minimap2 --version
-bedtools --version
-```
-
-### 3. Validate the source tree
-
-```bash
-cargo metadata --locked --no-deps --format-version 1 >/dev/null
 cargo test --locked
 bash -n run_all.sh
 bash -n run_all_mixed_species.sh
@@ -294,220 +74,167 @@ bash -n packaging/refresh_binary_release_metadata.sh
 python -m unittest discover -s tests -v
 ```
 
-For a development-only build:
+Check that every command succeeds before continuing. Each `bash -n` checks one
+script; passing multiple script paths to one invocation does not check them all.
+These tests do not replace a full workflow run on representative data.
+
+For a development executable without creating a release archive:
 
 ```bash
 cargo build --release --locked
 ./target/release/flora --version
+./target/release/flora --help
+./target/release/flora mixed --help
 ./target/release/flora glycine --help
 ./target/release/flora analyze --help
 ```
 
-### 4. Build and package the public binary release
+Use `flora` for the single-species workflow, `flora mixed` for mixed species,
+`flora glycine` for full-length identification only, and `flora analyze` for
+barcode/UMI extraction and cell assignment only. Full workflows accept multiple
+files after `--fastq`, or a non-recursive `--fastq-dir`. Glycine defaults to
+10 concurrent jobs sharing 64 total threads.
 
-The packaging script performs its own locked release build, so a separate
-`cargo build` command is not required here:
+## Build the Linux x86_64 release
+
+After preparing the environment and passing the tests above, run:
 
 ```bash
 PYTHON_BIN="$CONDA_PREFIX/bin/python" \
   bash packaging/build_binary_release.sh
 ```
 
-To enforce a specific maximum glibc requirement, set it explicitly:
+The script performs its own locked release build; a separate `cargo build` is
+not needed for packaging. It checks the Linux x86_64 binary and CLI, stages the
+runtime environment and public documentation, and generates and verifies SHA256.
+Python assets are embedded in `flora`, not shipped as loose source/bytecode files.
 
-```bash
-FLORA_MAX_GLIBC=2.34 \
-PYTHON_BIN="$CONDA_PREFIX/bin/python" \
-  bash packaging/build_binary_release.sh
-```
-
-Do not set a glibc ceiling lower than the symbols provided by the build host and
-linked libraries. The detected requirement is recorded in `BUILD_INFO.txt`.
-
-### 5. Locate the generated files
+Outputs, with the version read from `Cargo.toml`:
 
 ```text
+dist/Flora-<version>-linux-x86_64/
 dist/Flora-<version>-linux-x86_64.tar.gz
 dist/Flora-<version>-linux-x86_64.tar.gz.sha256
 ```
 
-The script builds only `flora`, stages it at the archive root, compiles an
-allowlist of Python files as deterministic CPython 3.11 bytecode, copies the
-runtime environment and public documentation, removes extended attributes, and
-generates and verifies SHA256 automatically.
+`BUILD_INFO.txt` inside the release records the required glibc version. Build
+on a compatible Linux host; macOS cannot produce this release with this script.
+An optional `FLORA_MAX_GLIBC=2.34` prefix rejects builds requiring newer symbols;
+it does not lower the binary's glibc requirement. For older hosts, use a
+compatible build environment or [Singularity](docs/singularity-build.md).
 
-The script deliberately refuses to package until both `flora run --help` and
-`flora run-mixed --help` succeed. During the migration period this failure is
-expected and prevents publication of an incomplete binary.
-
-## Build a Singularity image
-
-When the target HPC host provides an older glibc than the Flora binary requires,
-package the release and its Python/bioinformatics dependencies in a Singularity
-SIF. The validated base is Ubuntu 22.04 with glibc 2.35. The build host requires
-Linux x86_64, Singularity, and working `--fakeroot`; Docker is needed only to
-prepare the base image. The Flora Conda environment does not need to be active.
-
-Create an isolated build directory and copy the inputs:
+Before publishing, extract the archive into a fresh directory, activate the
+runtime environment, and verify the executable independently:
 
 ```bash
-mkdir -p singularity_build
-cp dist/Flora-0.1.2-linux-x86_64.tar.gz singularity_build/
-cp packaging/singularity/Flora.def singularity_build/
-cd singularity_build
-```
-
-Validate and export the Ubuntu 22.04 base image:
-
-```bash
-docker run --rm quay.io/nf-core/ubuntu:22.04 \
-  bash -c 'cat /etc/os-release; getconf GNU_LIBC_VERSION'
-
-docker save quay.io/nf-core/ubuntu:22.04 \
-  -o flora-base-ubuntu22.04.tar
-
-singularity build --fakeroot \
-  flora-base-ubuntu22.04.sif \
-  docker-archive://flora-base-ubuntu22.04.tar
-```
-
-If Singularity cannot access `/var/run/docker.sock`, do not make the socket
-world-writable. Use `docker save` plus `docker-archive://`, or ask the system
-administrator to configure Docker group access.
-
-Download the Miniforge installer once from a nearby mirror:
-
-```bash
-curl -L --fail --retry 5 --retry-delay 5 \
-  -o Miniforge3-Linux-x86_64.sh \
-  https://mirror.nju.edu.cn/github-release/conda-forge/miniforge/LatestRelease/Miniforge3-Linux-x86_64.sh
-```
-
-The four build inputs must be in the same directory:
-
-```text
-Flora.def
-Flora-0.1.2-linux-x86_64.tar.gz
-Miniforge3-Linux-x86_64.sh
-flora-base-ubuntu22.04.sif
-```
-
-Build and validate the SIF:
-
-```bash
-env -u LD_LIBRARY_PATH \
-singularity build --fakeroot \
-  Flora-0.1.2-linux-x86_64.sif \
-  Flora.def
-
-singularity run --cleanenv \
-  Flora-0.1.2-linux-x86_64.sif \
-  --version
-
-singularity run --cleanenv \
-  Flora-0.1.2-linux-x86_64.sif \
-  --help
-
-sha256sum Flora-0.1.2-linux-x86_64.sif \
-  > Flora-0.1.2-linux-x86_64.sif.sha256
-```
-
-The tested image contains Flora, Python 3.11, samtools, minimap2, bedtools, and
-all Python dependencies, and is approximately 820 MiB. `Flora.def` uses
-per-user writable cache directories under `/tmp` for Fontconfig, Matplotlib,
-and Numba.
-
-## Validate the release archive
-
-```bash
-ARCHIVE="dist/Flora-0.1.2-linux-x86_64.tar.gz"
-
-tar -tzf "$ARCHIVE" | head -50
-tar -tzf "$ARCHIVE" | \
-  grep -E '(^|/)(src|vendor|tests)/|Cargo\.(toml|lock)$|run_all|\.(rs|py|sh)$' && {
-    echo "ERROR: source file found in public archive" >&2
-    exit 1
-  } || true
-```
-
-Extract and test independently:
-
-```bash
-rm -rf /tmp/flora-release-test
-mkdir -p /tmp/flora-release-test
-tar -xzf "$ARCHIVE" -C /tmp/flora-release-test
-cd /tmp/flora-release-test/Flora-0.1.2-linux-x86_64
-
-file flora
-ldd flora
 ./flora --version
+./flora --help
+./flora mixed --help
 ./flora glycine --help
-./flora run --help
-./flora run-mixed --help
-cat PYTHON_ABI.txt
+./flora analyze --help
 cat BUILD_INFO.txt
 ```
 
-`file flora` should report an ELF x86-64 executable and `stripped`. Do not
-publish an archive whose main executable is reported as `not stripped`.
+Also run a representative dataset before release. Help commands verify the CLI,
+not the correctness of analysis results. The archive should contain only one
+executable, `flora`, and no private source files.
 
-The executable count must be exactly one:
+## ONT comparison backend
 
-```bash
-find . -type f -perm /111 -print
-```
+This branch defaults to `--feature-backend ont`, an independent implementation
+based on the historical [wf-single-cell v3.3.0 source snapshot](https://github.com/epi2me-labs/wf-single-cell/tree/d46f92121c79c28a02105cf2444029e91dc4b609).
+ONT withdrew that version; this branch pins the source commit and StringTie
+2.2.2 for comparison. It does not run ONT Nextflow or promise identical results.
 
-The only result should be `./flora`.
+The backend assembles a reference-guided sample transcriptome per chromosome,
+remaps reads, then selects genes/transcripts by alignment score and coverage.
+Gene assignment defaults to genomic MAPQ >=30; transcripts use separate
+transcriptome evidence. Novel assemblies are exported, but only reference-linked
+transcripts are counted. Flora retains its barcode/UMI model, cell calls, QC and
+report definitions, without ONT's old 10x-specific fixed UMI-length filter.
 
-## Generate the checksum
+Use the usual Flora command; the following options are optional:
 
-On Linux:
+| Option | Effect |
+| --- | --- |
+| `--feature-backend legacy` | Compare with the original GTF-overlap backend in a different output directory. |
+| `--ont-temp-dir /local_scratch/flora_tmp` | Place disposable scratch files on a writable local disk; otherwise use the system temp directory/`TMPDIR`. |
+| `--ont-jobs 2` | Run chromosomes concurrently; default: 1. |
+| `--stringtie-opts '-c 2'` | Set StringTie assembly options. |
+| `--cell-gene-max-reads 0` | Keep the ONT default of no per-cell/gene read truncation. |
 
-```bash
-cd /path/to/Flora
-sha256sum dist/Flora-0.1.2-linux-x86_64.tar.gz \
-  > dist/Flora-0.1.2-linux-x86_64.tar.gz.sha256
-```
+Effective chromosome concurrency is capped at
+`min(ont-jobs, max(1, cluster-threads / 8))`; jobs share the thread budget, with
+additional tool/I/O helper threads possible. More jobs require more RAM and
+scratch space. Avoid a small or memory-backed `/tmp` for large samples.
+`--transcript-assign-mapq` and `--gene-tagging-backend` affect legacy only.
+`--skip-isoform` skips transcript matrices, not the assembly needed for ONT genes.
 
-Verify it:
+In addition to the standard outputs:
 
-```bash
-cd dist
-sha256sum -c Flora-0.1.2-linux-x86_64.tar.gz.sha256
-```
+- `transcriptome/<sample>.transcriptome.fa.gz` and `.transcriptome.gtf.gz`:
+  assembled transcript sequences and annotation.
+- `transcriptome/tool_versions.json` and `assignment_summary.json`:
+  actual tool versions and assignment-status counts.
+- Gene/transcript raw and processed MEX directories under `matrix/`, plus
+  `<sample>.matrix_processing.json` with processing details.
 
-## Publish to the public GitHub repository
+Raw MEX contains integer UMI counts. Processed MEX applies minimum 200 features
+per cell, minimum 3 cells per feature, and maximum 20% mitochondrial counts,
+then normalizes to 10,000 counts/cell and applies `log10(1+x)`. Both `MT-` and
+`mt-` identifiers are recognized. The report uses Flora's original cell calls,
+not the additionally filtered processed-MEX population. Temporary transcriptome
+BAMs are retained only with `--save-intermediate` or `--full-output`.
 
-Update the public repository README from this private repository:
+Implementation and performance details:
+[ONT backend](docs/ont-v3.3.0-alignment.md),
+[performance record](docs/ont-v330-performance.md).
 
-```bash
-cp docs/repository-templates/public/README.md /path/to/Flora-public/README.md
-cp docs/repository-templates/public/README_zh-CN.md /path/to/Flora-public/README_zh-CN.md
-```
+## Workflow output policy
 
-Commit and push only the public documentation. Upload the `.tar.gz` and `.sha256` files as GitHub Release assets; do not commit them to Git history.
+Default light output retains the final tagged BAM/index, expression matrices,
+cell/barcode mapping, RNA clustering, QC, `qc/metrics_summary.xlsx`, logs, and
+the HTML report. After successful completion, reproducible read-level tables,
+the pre-tagging aligned BAM, and assignment TSVs are removed. An empty
+`alignment/` directory is also removed.
 
-With GitHub CLI:
+| Option | Effect |
+| --- | --- |
+| `--save-intermediate` | Retain read-level assignments and other debugging intermediates. |
+| `--full-output` | Retain upstream FASTQ outputs and workflow intermediates. |
+| `--remove-final-bam` | Remove all BAM/index files in `alignment/` and `matrix/` after successful analysis, including the final tagged BAM. |
 
-```bash
-gh release create v0.1.2 \
-  dist/Flora-0.1.2-linux-x86_64.tar.gz \
-  dist/Flora-0.1.2-linux-x86_64.tar.gz.sha256 \
-  --repo brilliantlee2/Flora \
-  --title "Flora v0.1.2" \
-  --generate-notes
-```
+These switches control retained files, not analytical thresholds. BAM removal
+takes precedence when combined with either retention switch. Full workflows do
+not enable Glycine's extra classification FASTQs; run `flora glycine` with
+`--keep-all-outputs` to obtain those files.
 
-Commit only README files, `Flora.def`, licenses, and release notes to Git
-history. Upload the binary archive and `.sha256` as GitHub Release assets. The
-SIF and its checksum are optional Release assets; omit them when users will
-build the image themselves. Never commit the base SIF, Docker tar, Miniforge
-installer, `dist/`, or private source code to the public repository.
+## Publish a release
 
-## Confidentiality rules
+1. Update `Cargo.toml`, then run `cargo check` without `--locked` to update the
+   Flora package version in `Cargo.lock`.
+2. Update versioned public documentation, release notes, and
+   `packaging/singularity/Flora.def` together.
+3. Run tests, build the release, and validate it as described above.
+4. Sync the approved files under `docs/repository-templates/public/` to the
+   public repository. Upload `.tar.gz` and `.sha256` as Release assets; an SIF
+   and its checksum are optional assets.
 
-- Keep this repository private.
-- Never push `src/`, `scripts/`, `vendor/`, Cargo manifests, tests, or packaging code to the public repository.
-- Inspect every archive before upload.
-- Python bytecode is obfuscation, not encryption; determined users may still reverse engineer it.
-- Build artifacts are platform-specific. Publish separate assets for each supported operating system and architecture.
+Use the same version for the tag and title, for example `v0.1.2` and
+`Flora v0.1.2`. Do not commit archives, SIF images, Docker tar files, Miniforge
+installers, or `dist/` to Git. Never copy private `src/`, `scripts/`, `vendor/`,
+Cargo files, tests, or packaging code to the public repository. A compiled
+executable is not encryption and may still be reverse engineered.
+
+## Source layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/`, `vendor/`, `Cargo.toml`, `Cargo.lock` | Rust source and pinned dependencies. |
+| `scripts/` | Python analysis, QC, and reporting assets. |
+| `run_all.sh`, `run_all_mixed_species.sh` | Single- and mixed-species workflow scripts. |
+| `tests/` | Regression and release checks. |
+| `packaging/` | Binary and container packaging tools. |
+| `docs/repository-templates/` | Public/private repository document templates. |
+
+Detailed container instructions: [Build a Singularity image](docs/singularity-build.md).
