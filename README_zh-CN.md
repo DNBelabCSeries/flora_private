@@ -9,8 +9,7 @@
 ## 克隆私有仓库
 
 ```bash
-git clone --branch codex/1028-ont-v330-performance --single-branch \
-  https://github.com/brilliantlee2/flora_private.git
+git clone https://github.com/brilliantlee2/flora_private.git
 cd flora_private
 ```
 
@@ -23,20 +22,19 @@ SSH 地址为 `git@github.com:brilliantlee2/flora_private.git`。
 在 Linux x86_64 的仓库根目录执行：
 
 ```bash
-conda env create -n flora-ont330 -f environment.yml
-conda activate flora-ont330
+conda env create -f environment.yml
+conda activate flora
 
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONUTF8=1
 ```
 
-已有环境时，用 `conda env update -n flora-ont330 -f environment.yml` 代替创建命令，
+已有环境时，用 `conda env update -n flora -f environment.yml` 代替创建命令，
 然后重新激活。必须使用 Python 3.11.x。
 `environment.yml` 包含构建工具和运行依赖；`environment.runtime.yml` 用于
-已打包的可执行文件；`requirements.txt` 只列出 Python 包。本分支还需要 StringTie
-2.2.2、`gffread` 和 `gffcompare`，两个环境文件中已包含这些依赖。
-建议将 `flora-ont330` 与 main 或其他 ONT 版本使用的环境分开。
+已打包的可执行文件；`requirements.txt` 只列出 Python 包。两个环境文件均已包含
+转录本重构与注释所需的 StringTie 2.2.2、`gffread` 和 `gffcompare`。
 
 编译前为 `rust-htslib`/`bindgen` 设置 libclang 路径。
 这仅是构建依赖，运行已打包的 Flora 不需要单独设置。
@@ -55,7 +53,7 @@ fi
 
 找不到时，执行 `conda install -c conda-forge libclang`，然后重新查找；成功后再编译。
 上述示例不会退出当前 SSH 会话。新开终端后需重新设置，也可在查找成功后执行
-`conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"`，再重新激活 `flora-ont330`。
+`conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"`，再重新激活 `flora`。
 
 ## 开发构建与测试
 
@@ -129,56 +127,32 @@ cat BUILD_INFO.txt
 发版前还应运行代表性数据；帮助命令只能验证 CLI，不能证明分析结果正确。
 压缩包应当只有 `flora` 一个可执行文件，不包含私有源码。
 
-## ONT 对照后端
-
-本分支默认使用 `--feature-backend ont`，参考
-[wf-single-cell v3.3.0 历史源码快照](https://github.com/epi2me-labs/wf-single-cell/tree/d46f92121c79c28a02105cf2444029e91dc4b609)
-独立实现。ONT 已撤回该版本；本分支固定源码提交和 StringTie 2.2.2 用于对照，
-不是直接运行 ONT Nextflow，也不承诺数值结果完全一致。
-
-后端按染色体构建参考引导的样本转录组，重新比对 reads，再按比对分数和覆盖度
-选择 gene/transcript。Gene 默认要求基因组 MAPQ >=30；transcript 使用独立的
-转录组比对证据。新发现的转录本会导出，但只统计能关联到参考注释的转录本。
-Barcode/UMI、细胞判定、QC 和报告沿用 Flora 定义，不套用旧 ONT 的 10x 固定 UMI 长度过滤。
-
-常用 Flora 命令无需增加参数；以下选项按需使用：
-
-| 选项 | 作用 |
-| --- | --- |
-| `--feature-backend legacy` | 使用原有 GTF-overlap 后端对照，另设输出目录。 |
-| `--ont-temp-dir /local_scratch/flora_tmp` | 将临时文件放到可写本地磁盘；默认使用系统临时目录/`TMPDIR`。 |
-| `--ont-jobs 2` | 并行处理染色体，默认 1。 |
-| `--stringtie-opts '-c 2'` | 设置 StringTie 重构选项。 |
-| `--cell-gene-max-reads 0` | ONT 默认不按每个 cell+gene 的 read 数量截断。 |
-
-实际染色体并发数不超过 `min(ont-jobs, max(1, cluster-threads / 8))`，
-各任务共享线程预算，工具主线程和辅助 I/O 线程可能额外存在。
-提高并发会增加内存和临时盘需求；大样本不要使用空间不足或内存文件系统上的 `/tmp`。
-`--transcript-assign-mapq` 和 `--gene-tagging-backend` 仅影响 legacy；
-`--skip-isoform` 跳过转录本矩阵，但 ONT 的 gene 判定仍需转录组重构。
-
-除常规输出外，还包括：
-
-- `transcriptome/<sample>.transcriptome.fa.gz` 和 `.transcriptome.gtf.gz`：重构序列和注释。
-- `transcriptome/tool_versions.json` 和 `assignment_summary.json`：实际工具版本和分配状态计数。
-- `matrix/` 下 gene/transcript 两个层级的 raw/processed MEX 矩阵，
-  以及记录处理详情的 `<sample>.matrix_processing.json`。
-
-Raw MEX 为整数 UMI 计数。Processed MEX 要求每细胞至少 200 个特征、每特征至少
-3 个细胞、线粒体比例不超过 20%，再按每细胞 10,000 计数归一化并执行
-`log10(1+x)`；同时识别 `MT-` 和 `mt-`。
-报告仍使用 Flora 原始细胞判定，不是 processed MEX 额外过滤后的细胞集合。
-转录组临时比对 BAM 仅在 `--save-intermediate` 或 `--full-output` 时保留。
-
-详细设计和实测：[ONT 后端](docs/ont-v3.3.0-alignment.md)、
-[性能优化记录](docs/ont-v330-performance.md)。
-
 ## 流程输出策略
 
 默认轻量输出保留最终 tagged BAM/索引、表达矩阵、cell/barcode 对应关系、
 RNA 聚类、QC、`qc/metrics_summary.xlsx`、日志和 HTML 报告。
 成功结束后删除可重建的 read-level 表、加标签前的 aligned BAM、assignment TSV；
 如果 `alignment/` 变空，也会移除该目录。
+
+新增输出如下：
+
+| 路径 | 内容 |
+| --- | --- |
+| `transcriptome/<sample>.transcriptome.fa.gz` | 重构的转录本序列。 |
+| `transcriptome/<sample>.transcriptome.gtf.gz` | 重构的转录本注释。 |
+| `transcriptome/tool_versions.json` | 实际工具版本。 |
+| `transcriptome/assignment_summary.json` | 基因、转录本分配状态计数。 |
+| `matrix/<sample>.gene_raw_feature_bc_matrix/` | 基因层面的整数 UMI 计数。 |
+| `matrix/<sample>.gene_processed_feature_bc_matrix/` | 过滤、归一化后的基因表达矩阵。 |
+| `matrix/<sample>.transcript_raw_feature_bc_matrix/` | 转录本层面的整数 UMI 计数。 |
+| `matrix/<sample>.transcript_processed_feature_bc_matrix/` | 过滤、归一化后的转录本表达矩阵。 |
+| `matrix/<sample>.matrix_processing.json` | 矩阵过滤参数及维度。 |
+
+每个 MEX 目录包含 `matrix.mtx.gz`、`features.tsv.gz` 和
+`barcodes.tsv.gz`（细胞 ID）。Processed 矩阵先按每细胞至少 200 个特征、
+每特征至少 3 个细胞、线粒体比例不超过 20% 过滤，再按每细胞 10,000 计数归一化并执行
+`log10(1+x)`。其中的细胞集合可能与报告的原始细胞判定不同。
+`--skip-isoform` 不输出转录本矩阵，原有 TSV 矩阵仍保留。
 
 | 选项 | 作用 |
 | --- | --- |

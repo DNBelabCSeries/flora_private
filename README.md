@@ -10,8 +10,7 @@ binary archives are distributed through GitHub Releases.
 ## Clone the private repository
 
 ```bash
-git clone --branch codex/1028-ont-v330-performance --single-branch \
-  https://github.com/brilliantlee2/flora_private.git
+git clone https://github.com/brilliantlee2/flora_private.git
 cd flora_private
 ```
 
@@ -24,21 +23,20 @@ Patched dependencies are included in `vendor/`; no submodule setup is needed.
 Run these commands from the repository root on Linux x86_64:
 
 ```bash
-conda env create -n flora-ont330 -f environment.yml
-conda activate flora-ont330
+conda env create -f environment.yml
+conda activate flora
 
 export LANG=C.UTF-8
 export LC_ALL=C.UTF-8
 export PYTHONUTF8=1
 ```
 
-For an existing environment, use `conda env update -n flora-ont330 -f environment.yml`
+For an existing environment, use `conda env update -n flora -f environment.yml`
 instead of creating it, then reactivate it. Use Python 3.11.x.
 `environment.yml` includes the build tools and runtime dependencies;
 `environment.runtime.yml` is for packaged executables, and `requirements.txt`
-lists Python packages only. This branch also requires StringTie 2.2.2,
-`gffread`, and `gffcompare`, already included in both environment files. Keep
-`flora-ont330` separate from the environment used for main or other ONT versions.
+lists Python packages only. Both environment files include StringTie 2.2.2,
+`gffread`, and `gffcompare`, required for transcript reconstruction and annotation.
 
 Before compiling, locate libclang for `rust-htslib`/`bindgen`. This is only a
 build dependency, not a requirement for running the packaged executable.
@@ -59,7 +57,7 @@ If not found, run `conda install -c conda-forge libclang`, then repeat the
 lookup. Do not continue building until it succeeds. This example does not exit
 your interactive SSH shell. Repeat the setup after opening a new shell, or
 persist a successful value with
-`conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"` and reactivate `flora-ont330`.
+`conda env config vars set LIBCLANG_PATH="$LIBCLANG_PATH"` and reactivate `flora`.
 
 ## Development build and tests
 
@@ -139,57 +137,6 @@ Also run a representative dataset before release. Help commands verify the CLI,
 not the correctness of analysis results. The archive should contain only one
 executable, `flora`, and no private source files.
 
-## ONT comparison backend
-
-This branch defaults to `--feature-backend ont`, an independent implementation
-based on the historical [wf-single-cell v3.3.0 source snapshot](https://github.com/epi2me-labs/wf-single-cell/tree/d46f92121c79c28a02105cf2444029e91dc4b609).
-ONT withdrew that version; this branch pins the source commit and StringTie
-2.2.2 for comparison. It does not run ONT Nextflow or promise identical results.
-
-The backend assembles a reference-guided sample transcriptome per chromosome,
-remaps reads, then selects genes/transcripts by alignment score and coverage.
-Gene assignment defaults to genomic MAPQ >=30; transcripts use separate
-transcriptome evidence. Novel assemblies are exported, but only reference-linked
-transcripts are counted. Flora retains its barcode/UMI model, cell calls, QC and
-report definitions, without ONT's old 10x-specific fixed UMI-length filter.
-
-Use the usual Flora command; the following options are optional:
-
-| Option | Effect |
-| --- | --- |
-| `--feature-backend legacy` | Compare with the original GTF-overlap backend in a different output directory. |
-| `--ont-temp-dir /local_scratch/flora_tmp` | Place disposable scratch files on a writable local disk; otherwise use the system temp directory/`TMPDIR`. |
-| `--ont-jobs 2` | Run chromosomes concurrently; default: 1. |
-| `--stringtie-opts '-c 2'` | Set StringTie assembly options. |
-| `--cell-gene-max-reads 0` | Keep the ONT default of no per-cell/gene read truncation. |
-
-Effective chromosome concurrency is capped at
-`min(ont-jobs, max(1, cluster-threads / 8))`; jobs share the thread budget, with
-additional tool/I/O helper threads possible. More jobs require more RAM and
-scratch space. Avoid a small or memory-backed `/tmp` for large samples.
-`--transcript-assign-mapq` and `--gene-tagging-backend` affect legacy only.
-`--skip-isoform` skips transcript matrices, not the assembly needed for ONT genes.
-
-In addition to the standard outputs:
-
-- `transcriptome/<sample>.transcriptome.fa.gz` and `.transcriptome.gtf.gz`:
-  assembled transcript sequences and annotation.
-- `transcriptome/tool_versions.json` and `assignment_summary.json`:
-  actual tool versions and assignment-status counts.
-- Gene/transcript raw and processed MEX directories under `matrix/`, plus
-  `<sample>.matrix_processing.json` with processing details.
-
-Raw MEX contains integer UMI counts. Processed MEX applies minimum 200 features
-per cell, minimum 3 cells per feature, and maximum 20% mitochondrial counts,
-then normalizes to 10,000 counts/cell and applies `log10(1+x)`. Both `MT-` and
-`mt-` identifiers are recognized. The report uses Flora's original cell calls,
-not the additionally filtered processed-MEX population. Temporary transcriptome
-BAMs are retained only with `--save-intermediate` or `--full-output`.
-
-Implementation and performance details:
-[ONT backend](docs/ont-v3.3.0-alignment.md),
-[performance record](docs/ont-v330-performance.md).
-
 ## Workflow output policy
 
 Default light output retains the final tagged BAM/index, expression matrices,
@@ -197,6 +144,27 @@ cell/barcode mapping, RNA clustering, QC, `qc/metrics_summary.xlsx`, logs, and
 the HTML report. After successful completion, reproducible read-level tables,
 the pre-tagging aligned BAM, and assignment TSVs are removed. An empty
 `alignment/` directory is also removed.
+
+Additional outputs:
+
+| Path | Contents |
+| --- | --- |
+| `transcriptome/<sample>.transcriptome.fa.gz` | Assembled transcript sequences. |
+| `transcriptome/<sample>.transcriptome.gtf.gz` | Assembled transcript annotation. |
+| `transcriptome/tool_versions.json` | Actual tool versions. |
+| `transcriptome/assignment_summary.json` | Gene/transcript assignment status counts. |
+| `matrix/<sample>.gene_raw_feature_bc_matrix/` | Gene-level integer UMI counts. |
+| `matrix/<sample>.gene_processed_feature_bc_matrix/` | Filtered, normalized gene expression. |
+| `matrix/<sample>.transcript_raw_feature_bc_matrix/` | Transcript-level integer UMI counts. |
+| `matrix/<sample>.transcript_processed_feature_bc_matrix/` | Filtered, normalized transcript expression. |
+| `matrix/<sample>.matrix_processing.json` | Matrix filtering settings and dimensions. |
+
+Each MEX directory contains `matrix.mtx.gz`, `features.tsv.gz`, and
+`barcodes.tsv.gz` (cell IDs). Processed matrices apply filters of at least 200
+features/cell, 3 cells/feature and at most 20% mitochondrial counts, then normalize
+to 10,000 counts/cell and apply `log10(1+x)`. Their cell set may differ from the
+report's original cell calls. `--skip-isoform` omits transcript matrices.
+The existing TSV matrices are retained.
 
 | Option | Effect |
 | --- | --- |
