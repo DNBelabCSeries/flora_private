@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/epi2me-labs/wf-single-cell",
+  "manifest_version": "3.3.0",
+  "source_commit": "d46f92121c79c28a02105cf2444029e91dc4b609",
+  "source_date": "2025-06-10",
+  "withdrawn": true,
+  "deleted_release_tag_recovered": false,
+  "container": "ontresearch/wf-single-cell:shab5b0dea0efc4685f74c8b4f91c979c587e23a020",
+  "sha256": {
+    "bin/workflow_glue/assign_features.py": "dea877707fed95eedfff0445043a0b67e0697bf95e6746f7edfab931407ff4b1",
+    "subworkflows/assign_features.nf": "532051aad0ded659e141ff5282c6946545531038be9ec14b9d1469157efa314c",
+    "subworkflows/preprocess.nf": "b94f1634d98a0f2da5ca838f918d5b7c8419b17d1ea8b63c23e5c07064fb2c81",
+    "bin/workflow_glue/create_matrix.py": "2d3f31ae662d249b15ba6938f94080c2570d9614ca34c9bd3a132bd2fe00d043",
+    "bin/workflow_glue/expression_matrix.py": "219ddba98f3f8e8ef3e82d25529663e7bb60450eb7f3f88e85b447ada51249a8",
+    "nextflow.config": "22458742e16cc491c9f52977109d4d4e9e4cb206888d2d9b194b33e983136f06"
+  }
+}

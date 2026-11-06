@@ -103,6 +103,10 @@ pub fn main() -> Result<()> {
     Ok(())
 }
 
+fn read_cap_reached(seen_reads: usize, limit: usize) -> bool {
+    limit > 0 && seen_reads >= limit
+}
+
 fn collect_and_cluster(
     bam: &mut bam::IndexedReader,
     chrom: &str,
@@ -143,7 +147,7 @@ fn collect_and_cluster(
         };
 
         let group = &mut groups[group_id];
-        if group.seen_reads >= cli.cell_gene_max_reads {
+        if read_cap_reached(group.seen_reads, cli.cell_gene_max_reads) {
             continue;
         }
         group.seen_reads += 1;
@@ -248,6 +252,13 @@ fn get_string_tag(rec: &bam::Record, tag: &[u8; 2]) -> Option<String> {
 mod tests {
     use super::{cluster_groups, region_name_from_positions, GroupState};
     use rustc_hash::FxHashMap as HashMap;
+
+    #[test]
+    fn zero_read_cap_means_unlimited() {
+        assert!(!super::read_cap_reached(50000, 0));
+        assert!(super::read_cap_reached(20000, 20000));
+        assert!(!super::read_cap_reached(19999, 20000));
+    }
 
     #[test]
     fn region_name_matches_python_midpoint_binning() {

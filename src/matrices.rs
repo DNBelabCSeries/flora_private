@@ -3,12 +3,13 @@ use std::collections::BTreeSet;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 pub fn is_genomic_placeholder(gene: &str) -> bool {
-    let mut parts = gene.split('_');
-    let Some(a) = parts.next() else { return false };
-    let Some(b) = parts.next() else { return false };
+    let mut parts = gene.rsplitn(3, '_');
     let Some(c) = parts.next() else { return false };
-    parts.next().is_none()
-        && !a.is_empty()
+    let Some(b) = parts.next() else { return false };
+    let Some(a) = parts.next() else { return false };
+    !a.is_empty()
+        && !b.is_empty()
+        && !c.is_empty()
         && b.chars().all(|ch| ch.is_ascii_digit())
         && c.chars().all(|ch| ch.is_ascii_digit())
 }
@@ -44,6 +45,8 @@ mod tests {
     #[test]
     fn genomic_placeholder_detection_matches_python_intent() {
         assert!(is_genomic_placeholder("chr7_44468000_44469000"));
+        assert!(is_genomic_placeholder("hs_chr7_44468000_44469000"));
+        assert!(is_genomic_placeholder("NC_000001.11_1000_2000"));
         assert!(!is_genomic_placeholder("ACTB"));
         assert!(!is_genomic_placeholder("chr7_44468000_gene"));
     }

@@ -8,6 +8,7 @@ pub mod glycine;
 pub mod matrices;
 pub mod pipeline;
 pub mod read_qc;
+mod trim_cache;
 pub mod umi_cluster;
 pub mod workflow_runtime;
 

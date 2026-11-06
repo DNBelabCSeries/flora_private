@@ -35,7 +35,8 @@ For an existing environment, use `conda env update -n flora -f environment.yml`
 instead of creating it, then reactivate it. Use Python 3.11.x.
 `environment.yml` includes the build tools and runtime dependencies;
 `environment.runtime.yml` is for packaged executables, and `requirements.txt`
-lists Python packages only.
+lists Python packages only. Both environment files include StringTie 2.2.2,
+`gffread`, and `gffcompare`, required for transcript reconstruction and annotation.
 
 Before compiling, locate libclang for `rust-htslib`/`bindgen`. This is only a
 build dependency, not a requirement for running the packaged executable.
@@ -143,6 +144,27 @@ cell/barcode mapping, RNA clustering, QC, `qc/metrics_summary.xlsx`, logs, and
 the HTML report. After successful completion, reproducible read-level tables,
 the pre-tagging aligned BAM, and assignment TSVs are removed. An empty
 `alignment/` directory is also removed.
+
+Additional outputs:
+
+| Path | Contents |
+| --- | --- |
+| `transcriptome/<sample>.transcriptome.fa.gz` | Assembled transcript sequences. |
+| `transcriptome/<sample>.transcriptome.gtf.gz` | Assembled transcript annotation. |
+| `transcriptome/tool_versions.json` | Actual tool versions. |
+| `transcriptome/assignment_summary.json` | Gene/transcript assignment status counts. |
+| `matrix/<sample>.gene_raw_feature_bc_matrix/` | Gene-level integer UMI counts. |
+| `matrix/<sample>.gene_processed_feature_bc_matrix/` | Filtered, normalized gene expression. |
+| `matrix/<sample>.transcript_raw_feature_bc_matrix/` | Transcript-level integer UMI counts. |
+| `matrix/<sample>.transcript_processed_feature_bc_matrix/` | Filtered, normalized transcript expression. |
+| `matrix/<sample>.matrix_processing.json` | Matrix filtering settings and dimensions. |
+
+Each MEX directory contains `matrix.mtx.gz`, `features.tsv.gz`, and
+`barcodes.tsv.gz` (cell IDs). Processed matrices apply filters of at least 200
+features/cell, 3 cells/feature and at most 20% mitochondrial counts, then normalize
+to 10,000 counts/cell and apply `log10(1+x)`. Their cell set may differ from the
+report's original cell calls. `--skip-isoform` omits transcript matrices.
+The existing TSV matrices are retained.
 
 | Option | Effect |
 | --- | --- |

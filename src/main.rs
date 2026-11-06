@@ -88,6 +88,9 @@ struct Cli {
     #[arg(long = "full-output", action = ArgAction::SetTrue)]
     full_output: bool,
 
+    #[arg(long = "alignment-fastq", hide = true)]
+    alignment_fastq: Option<PathBuf>,
+
     #[arg(long = "save-intermediate", action = ArgAction::SetTrue)]
     save_intermediate: bool,
 
@@ -243,6 +246,7 @@ where
         skip_matched_fastq: skip_fastq,
         skip_unmatched_fastq: skip_fastq,
         skip_cell_fastq: skip_fastq,
+        alignment_fastq: cli.alignment_fastq,
         save_intermediate: cli.save_intermediate,
         save_correction_maps: cli.save_merge_debug,
     };

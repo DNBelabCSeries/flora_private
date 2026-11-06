@@ -43,6 +43,8 @@ const PYTHON_ASSETS: &[(&str, &[u8])] = &[
     ("generate_knee_plots.pyc", pyc!("generate_knee_plots.pyc")),
     ("isoform_expression.pyc", pyc!("isoform_expression.pyc")),
     ("metrics_summary.pyc", pyc!("metrics_summary.pyc")),
+    ("ont_features.pyc", pyc!("ont_features.pyc")),
+    ("ont_matrices.pyc", pyc!("ont_matrices.pyc")),
     ("prepare_read_tags.pyc", pyc!("prepare_read_tags.pyc")),
     ("read_qc_summary.pyc", pyc!("read_qc_summary.pyc")),
     ("rna_cluster_analysis.pyc", pyc!("rna_cluster_analysis.pyc")),
@@ -263,6 +265,7 @@ fn normalize_path_options(args: &mut [OsString]) -> Result<()> {
         "--out-dir",
         "--outdir",
         "--glycine-outdir",
+        "--ont-temp-dir",
     ];
     let cwd = std::env::current_dir().context("failed to resolve current directory")?;
     let mut index = 0;

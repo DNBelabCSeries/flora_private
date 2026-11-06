@@ -806,6 +806,22 @@ class WorkflowTimingContractTest(unittest.TestCase):
             ):
                 self.assertNotIn(retained, cleanup)
 
+    def test_light_output_streams_alignment_fastq_without_persisting_it(self):
+        for name, script in self.scripts.items():
+            with self.subTest(script=name):
+                self.assertIn("ALIGNMENT_STREAMING=0", script)
+                self.assertIn(
+                    'if [[ "${LIGHT_OUTPUT}" -eq 1 && "${SAVE_INTERMEDIATE}" -eq 0 ]]',
+                    script,
+                )
+                self.assertIn("ALIGNMENT_STREAMING=1", script)
+                self.assertIn('${SAMPLE_ID}.cdna.fastq.pipe', script)
+                self.assertIn('mkfifo "${ALIGNMENT_FASTQ}"', script)
+                self.assertIn('exec 9<>"${ALIGNMENT_FASTQ}"', script)
+                self.assertIn('wait "${ALIGNMENT_STREAM_PID}"', script)
+                self.assertIn('rm -f "${ALIGNMENT_FASTQ}"', script)
+                self.assertIn('${SAMPLE_ID}.cdna.fastq.gz', script)
+
     def test_correction_maps_are_opt_in_debug_outputs(self):
         project_root = Path(__file__).resolve().parents[1]
         pipeline = (project_root / "src" / "pipeline.rs").read_text(encoding="utf-8")

@@ -118,6 +118,63 @@ pub fn extract_putative(
     }
 }
 
+fn absolute_index(index: isize, read_len: usize) -> Option<usize> {
+    let index = if index < 0 {
+        read_len as isize + index
+    } else {
+        index
+    };
+    (0..=read_len as isize)
+        .contains(&index)
+        .then_some(index as usize)
+}
+
+/// Return the cDNA interval after removing recognized terminal barcode/UMI
+/// structures. The booleans come from the corrected read, so an unvalidated
+/// end is never trimmed solely because a short motif happened to match.
+pub fn cdna_trim_bounds(
+    row: &PutativeRow,
+    read_len: usize,
+    has_valid_3p: bool,
+    has_valid_5p: bool,
+) -> Option<(usize, usize)> {
+    let mut start = 0usize;
+    let mut end = read_len;
+
+    if has_valid_5p {
+        if let Some(umi_fixed) = row
+            .umi_fixed_locs_5p
+            .and_then(|index| absolute_index(index, read_len))
+        {
+            start = umi_fixed.saturating_add(15).min(read_len);
+        } else if row.bc_fixed_locs_50 >= 0 {
+            start = (row.bc_fixed_locs_50 as usize)
+                .saturating_add(31)
+                .min(read_len);
+        }
+    }
+
+    if has_valid_3p {
+        if let Some(poly_a_start) = row
+            .poly_a_starts
+            .and_then(|index| absolute_index(index, read_len))
+        {
+            end = poly_a_start;
+        } else if let Some(umi_fixed) = row
+            .umi_fixed_locs
+            .and_then(|index| absolute_index(index, read_len))
+        {
+            end = umi_fixed.saturating_sub(10);
+        } else if row.bc_fixed_locs != -1 {
+            if let Some(bc_fixed) = absolute_index(row.bc_fixed_locs, read_len) {
+                end = bc_fixed.saturating_sub(25);
+            }
+        }
+    }
+
+    (start < end && end <= read_len).then_some((start, end))
+}
+
 fn poly_a_trimming_idx(
     seq: &str,
     seed: &str,
@@ -757,5 +814,38 @@ mod tests {
         assert_eq!(row.putative_umi, "TTTAAAAAAAAGATC");
         assert_eq!(row.read_types, 1);
         assert!(row.poly_a_starts.is_some());
+    }
+
+    #[test]
+    fn trims_valid_dual_end_structures_to_cdna() {
+        let barcode_5p = "AAAAAAAAAACCTTCCGGGGGGGGGG";
+        let umi_5p = "CAGCATTTTTTTTTT";
+        let cdna = "CGTC".repeat(40);
+        let umi_3p = "CCCCCCCCCCAGATC";
+        let barcode_3p = "TTTTTTTTTTGCTACCAAAAAAAAAA";
+        let seq = format!("{barcode_5p}{umi_5p}{cdna}{umi_3p}{barcode_3p}");
+        let rec = FastqRecord {
+            id: "trim-me".to_string(),
+            qual: "I".repeat(seq.len()),
+            seq,
+        };
+        let row = extract_putative(&rec, "GCTACC", "AGATC", "CCTTCC", "CAGCA");
+        let (start, end) = cdna_trim_bounds(&row, rec.seq.len(), true, true).unwrap();
+        assert_eq!(&rec.seq[start..end], cdna);
+        assert_eq!(end - start, cdna.len());
+    }
+
+    #[test]
+    fn leaves_unvalidated_ends_untouched() {
+        let rec = FastqRecord {
+            id: "no-trim".to_string(),
+            seq: "ACGTACGT".to_string(),
+            qual: "IIIIIIII".to_string(),
+        };
+        let row = extract_putative(&rec, "GCTACC", "AGATC", "CCTTCC", "CAGCA");
+        assert_eq!(
+            cdna_trim_bounds(&row, rec.seq.len(), false, false),
+            Some((0, 8))
+        );
     }
 }

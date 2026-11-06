@@ -81,15 +81,27 @@ fn candidate_pairs(umis: &[String], threshold: usize) -> Vec<(usize, usize)> {
 
     let mut seen_pairs = HashSet::default();
     let mut pairs = Vec::new();
-    for indices in buckets.values() {
-        for left in 0..indices.len() {
-            for right in left + 1..indices.len() {
-                let i = indices[left];
-                let j = indices[right];
-                let pair = if i < j { (i, j) } else { (j, i) };
-                let packed = ((pair.0 as u64) << 32) | pair.1 as u64;
-                if seen_pairs.insert(packed) {
-                    pairs.push(pair);
+    // One segment survives threshold edits intact, but indels can shift it.
+    for (i, umi) in umis.iter().enumerate() {
+        let bytes = umi.as_bytes();
+        for (segment_idx, (start, end)) in bounds.iter().copied().enumerate() {
+            let segment_len = end - start;
+            let first = start.saturating_sub(threshold);
+            let last = start.saturating_add(threshold).min(len - segment_len);
+            for offset in first..=last {
+                let key = (segment_idx, bytes[offset..offset + segment_len].to_vec());
+                let Some(indices) = buckets.get(&key) else {
+                    continue;
+                };
+                for &j in indices {
+                    if i == j {
+                        continue;
+                    }
+                    let pair = if i < j { (i, j) } else { (j, i) };
+                    let packed = ((pair.0 as u64) << 32) | pair.1 as u64;
+                    if seen_pairs.insert(packed) {
+                        pairs.push(pair);
+                    }
                 }
             }
         }
@@ -188,5 +200,101 @@ mod tests {
         ];
         let pairs = candidate_pairs(&umis, 1);
         assert!(pairs.contains(&(0, 1)));
+    }
+
+    #[test]
+    fn indexed_candidates_keep_shifted_indel_neighbors() {
+        let mut umis = vec![
+            "ACGTCAGTACGATCGTACGA".to_string(),
+            "CGTCAGTACGATCGTACGAA".to_string(),
+        ];
+        for i in 0..63 {
+            let suffix = (0..8)
+                .map(|bit| if i & (1 << bit) == 0 { 'A' } else { 'C' })
+                .collect::<String>();
+            umis.push(format!("TTTTTTTTTTTT{suffix}"));
+        }
+        assert_eq!(bounded_levenshtein(&umis[0], &umis[1], 2), Some(2));
+        for threshold in 2..=3 {
+            assert!(candidate_pairs(&umis, threshold).contains(&(0, 1)));
+        }
+    }
+
+    #[test]
+    fn clustering_keeps_indel_correction_across_indexing_boundary() {
+        let parent = "ACGTCAGTACGATCGTACGA";
+        let child = "CGTCAGTACGATCGTACGAA";
+        for distinct_umis in [64, 65] {
+            let mut counts = HashMap::default();
+            counts.insert(parent.to_string(), 100);
+            counts.insert(child.to_string(), 1);
+            for i in 0..distinct_umis - 2 {
+                let suffix = (0..8)
+                    .map(|bit| if i & (1 << bit) == 0 { 'A' } else { 'C' })
+                    .collect::<String>();
+                counts.insert(format!("TTTTTTTTTTTT{suffix}"), 1);
+            }
+            assert_eq!(cluster_directional(&counts, 2)[child], parent);
+        }
+    }
+
+    #[test]
+    fn indexed_clustering_rejects_distant_segment_matches() {
+        let parent = "AAAAAAAAAAAAAAAAAAAA";
+        let distant = "AAAAAAAACCCCCCCCCCCC";
+        let mut counts = HashMap::default();
+        counts.insert(parent.to_string(), 100);
+        counts.insert(distant.to_string(), 1);
+        for i in 0..63 {
+            let suffix = (0..8)
+                .map(|bit| if i & (1 << bit) == 0 { 'A' } else { 'C' })
+                .collect::<String>();
+            counts.insert(format!("TTTTTTTTTTTT{suffix}"), 1);
+        }
+        let map = cluster_directional(&counts, 2);
+        assert_eq!(map[parent], parent);
+        assert_eq!(map[distant], distant);
+    }
+
+    #[test]
+    fn indexed_clustering_preserves_directional_abundance_filter() {
+        let parent = "ACGTCAGTACGATCGTACGA";
+        let child = "CGTCAGTACGATCGTACGAA";
+        let mut counts = HashMap::default();
+        counts.insert(parent.to_string(), 100);
+        counts.insert(child.to_string(), 51);
+        for i in 0..63 {
+            let suffix = (0..8)
+                .map(|bit| if i & (1 << bit) == 0 { 'A' } else { 'C' })
+                .collect::<String>();
+            counts.insert(format!("TTTTTTTTTTTT{suffix}"), 1);
+        }
+        let map = cluster_directional(&counts, 2);
+        assert_eq!(map[parent], parent);
+        assert_eq!(map[child], child);
+    }
+
+    #[test]
+    fn indexed_candidates_match_exhaustive_binary_dna_neighbors() {
+        let umis = (0..256)
+            .map(|value| {
+                (0..8)
+                    .map(|bit| if value & (1 << bit) == 0 { 'A' } else { 'C' })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        for threshold in 1..=3 {
+            let candidates = candidate_pairs(&umis, threshold)
+                .into_iter()
+                .collect::<HashSet<_>>();
+            for (i, j) in all_pairs(umis.len()) {
+                if bounded_levenshtein(&umis[i], &umis[j], threshold).is_some() {
+                    assert!(
+                        candidates.contains(&(i, j)),
+                        "missing {i}/{j}, distance <= {threshold}"
+                    );
+                }
+            }
+        }
     }
 }

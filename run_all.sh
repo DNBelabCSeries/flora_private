@@ -49,10 +49,14 @@ Usage:
     [--gene-assign-mapq 30] \
     [--gene-assign-chunk-size 200000] \
     [--gene-tagging-backend rust|legacy|validate] \
+    [--feature-backend ont|legacy] \
+    [--ont-jobs 1] \
+    [--ont-temp-dir /path/to/local_scratch] \
+    [--stringtie-opts '-c 2'] \
     [--transcript-assign-mapq 30] \
     [--transcript-assign-chunk-size 200000] \
     [--ref-interval 1000] \
-    [--cell-gene-max-reads 20000] \
+    [--cell-gene-max-reads 0] \
     [--save-merge-debug] \
     [--save-intermediate] \
     [--remove-final-bam] \
@@ -78,21 +82,29 @@ Notes:
      BAM tags: CB/CR/UR plus dual-end custom tags C5/C3/U5/U3.
   11. --barcode-extract-mode fixed_seq is the current validated mode. probe is
      reserved for a future Sockeye-style local-alignment extractor and exits clearly.
-  12. Light output is enabled by default. It suppresses unused upstream FASTQs
-     and removes large, reproducible BAM/read-level intermediates only after the
-     complete workflow and report finish successfully.
-  13. Use --full-output to restore all upstream FASTQs. Use --save-intermediate
-     to retain intermediate BAM, read-assignment, and annotation files.
+  12. Light output is enabled by default. Trimmed cDNA reads stream directly to
+      minimap2 without creating alignment/<sample>.cdna.fastq.gz on disk.
+  13. Use --full-output or --save-intermediate to retain the trimmed cDNA FASTQ
+      and other intermediate outputs for debugging.
      Use --remove-final-bam to remove every alignment/matrix BAM and index after
      matrices, QC, and the report finish successfully.
-  14. Alignment uses minimap2 --secondary=no and downstream tagging uses
-      aligned.sorted.bam directly, matching run_all_mixed_species.sh.
-  15. --skip-isoform skips transcript assignment and isoform matrix generation.
+  14. Flora identifies barcode/UMI structures before alignment, trims validated
+      terminal structures, and aligns the resulting cDNA reads with ONT-style
+      minimap2 streaming and secondary-alignment filtering.
+  15. --skip-isoform skips isoform matrix generation (and legacy transcript assignment).
       Gene-level expression, RNA QC, and the HTML report still run.
   16. Advanced knobs are available for assignment and memory control:
       --gene-assign-mapq, --gene-assign-chunk-size,
       --transcript-assign-mapq, --transcript-assign-chunk-size,
       --ref-interval, and --cell-gene-max-reads.
+  17. --feature-backend ont (default) uses wf-single-cell v3.3.0-style sample
+      transcriptome assembly and joint gene/transcript assignment. Requires
+      stringtie, gffread and gffcompare. legacy uses the original GTF overlap.
+      --gene-assign-mapq gates gene assignment; --transcript-assign-mapq applies
+      only to legacy. ONT transcript assignment uses alignment score/coverage.
+      ONT defaults to no per-cell/gene read cap (0); legacy defaults to 20000.
+      ONT 3.3.0 was withdrawn upstream. This comparison backend pins historical
+      source d46f92121c79c28a02105cf2444029e91dc4b609 and StringTie 2.2.2.
 EOF
 }
 
@@ -158,6 +170,7 @@ write_parameters_tsv() {
     printf "skip_cell_fastq\t%s\n" "${SKIP_CELL_FASTQ}"
     printf "fastq\t%s\n" "${FASTQ}"
     printf "full_length_fastq\t%s\n" "${FULL_LENGTH_FASTQ}"
+    printf "alignment_input\t%s\n" "${ALIGNMENT_INPUT_MODE}"
     printf "glycine_outdir\t%s\n" "${GLYCINE_OUTDIR}"
     printf "barcode_list_10bp\t%s\n" "${BARCODE_LIST_10BP}"
     printf "tso_seq\t%s\n" "${TSO_SEQ}"
@@ -192,6 +205,17 @@ write_parameters_tsv() {
     printf "gene_assign_mapq\t%s\n" "${GENE_ASSIGN_MAPQ}"
     printf "gene_assign_chunk_size\t%s\n" "${GENE_ASSIGN_CHUNK_SIZE}"
     printf "gene_tagging_backend\t%s\n" "${GENE_TAGGING_BACKEND}"
+    printf "feature_backend\t%s\n" "${FEATURE_BACKEND}"
+    if [[ "${FEATURE_BACKEND}" == "ont" ]]; then
+      printf "feature_reference\twf-single-cell v3.3.0\n"
+      printf "feature_reference_commit\td46f92121c79c28a02105cf2444029e91dc4b609\n"
+      printf "feature_reference_withdrawn\ttrue\n"
+    else
+      printf "feature_reference\tFlora GTF-overlap\n"
+    fi
+    printf "stringtie_opts\t%s\n" "${STRINGTIE_OPTS}"
+    printf "ont_jobs\t%s\n" "${ONT_JOBS}"
+    printf "ont_temp_dir\t%s\n" "${ONT_TEMP_DIR:-system temp/TMPDIR}"
     printf "transcript_assign_mapq\t%s\n" "${TRANSCRIPT_ASSIGN_MAPQ}"
     printf "transcript_assign_chunk_size\t%s\n" "${TRANSCRIPT_ASSIGN_CHUNK_SIZE}"
     printf "ref_interval\t%s\n" "${REF_INTERVAL}"
@@ -263,9 +287,35 @@ remove_intermediate() {
   fi
 }
 
+run_alignment_pipeline() {
+  local input_fastq="$1"
+  minimap2 -ax splice -uf --MD -I 16G -t "${THREADS}" -K 10M \
+    --junc-bed "${JUNCTION_BED}" \
+    --cap-kalloc 100m \
+    "${GENE_FASTA}" "${input_fastq}" \
+  | samtools view -uh --no-PG - \
+  | samtools view -uh -F 256 - \
+  | samtools sort --no-PG -@ "${THREADS}" -o "${ALIGNED_BAM}" -
+}
+
+cleanup_alignment_stream() {
+  if [[ "${ALIGNMENT_STREAM_ACTIVE:-0}" -ne 1 ]]; then
+    return
+  fi
+  { exec 9>&-; } 2>/dev/null || true
+  if [[ -n "${ALIGNMENT_STREAM_PID:-}" ]]; then
+    kill "${ALIGNMENT_STREAM_PID}" 2>/dev/null || true
+    wait "${ALIGNMENT_STREAM_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${ALIGNMENT_FASTQ:-}" && -p "${ALIGNMENT_FASTQ}" ]]; then
+    rm -f "${ALIGNMENT_FASTQ}"
+  fi
+}
+
 cleanup_large_intermediates() {
   local path
   local paths=(
+    "${ALIGN_DIR}/${SAMPLE_ID}.cdna.fastq.gz"
     "${ALIGN_DIR}/${SAMPLE_ID}.aligned.sorted.bam"
     "${ALIGN_DIR}/${SAMPLE_ID}.aligned.sorted.bam.bai"
     "${ALIGN_DIR}/${SAMPLE_ID}.filtered.cb_ur.sorted.bam"
@@ -366,10 +416,15 @@ REQUIRE_PASS_BOTH_ENDS=0
 GENE_ASSIGN_MAPQ=30
 GENE_ASSIGN_CHUNK_SIZE=200000
 GENE_TAGGING_BACKEND="rust"
+FEATURE_BACKEND="ont"
+ONT_JOBS=1
+ONT_TEMP_DIR=""
+STRINGTIE_OPTS="-c 2"
 TRANSCRIPT_ASSIGN_MAPQ=30
 TRANSCRIPT_ASSIGN_CHUNK_SIZE=200000
 REF_INTERVAL=1000
 CELL_GENE_MAX_READS=20000
+CELL_GENE_MAX_READS_EXPLICIT=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -431,10 +486,15 @@ while [[ $# -gt 0 ]]; do
     --gene-assign-mapq) GENE_ASSIGN_MAPQ="$2"; shift 2 ;;
     --gene-assign-chunk-size) GENE_ASSIGN_CHUNK_SIZE="$2"; shift 2 ;;
     --gene-tagging-backend) GENE_TAGGING_BACKEND="$2"; shift 2 ;;
+    --feature-backend) FEATURE_BACKEND="$2"; shift 2 ;;
+    --ont-jobs) ONT_JOBS="$2"; shift 2 ;;
+    --ont-temp-dir) ONT_TEMP_DIR="$2"; shift 2 ;;
+    --stringtie-opts) STRINGTIE_OPTS="$2"; shift 2 ;;
+    --stringtie-opts=*) STRINGTIE_OPTS="${1#*=}"; shift ;;
     --transcript-assign-mapq) TRANSCRIPT_ASSIGN_MAPQ="$2"; shift 2 ;;
     --transcript-assign-chunk-size) TRANSCRIPT_ASSIGN_CHUNK_SIZE="$2"; shift 2 ;;
     --ref-interval) REF_INTERVAL="$2"; shift 2 ;;
-    --cell-gene-max-reads) CELL_GENE_MAX_READS="$2"; shift 2 ;;
+    --cell-gene-max-reads) CELL_GENE_MAX_READS="$2"; CELL_GENE_MAX_READS_EXPLICIT=1; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "[ERROR] Unknown argument: $1" >&2
@@ -443,6 +503,18 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ ! "${ONT_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "[ERROR] --ont-jobs must be a positive integer." >&2
+  exit 1
+fi
+if [[ "${FEATURE_BACKEND}" != "ont" && "${FEATURE_BACKEND}" != "legacy" ]]; then
+  echo "[ERROR] --feature-backend must be ont or legacy." >&2
+  exit 1
+fi
+if [[ "${FEATURE_BACKEND}" == "ont" && "${CELL_GENE_MAX_READS_EXPLICIT}" -eq 0 ]]; then
+  CELL_GENE_MAX_READS=0
+fi
 
 if [[ "${GENE_TAGGING_BACKEND}" != "rust" && "${GENE_TAGGING_BACKEND}" != "legacy" && "${GENE_TAGGING_BACKEND}" != "validate" ]]; then
   echo "[ERROR] --gene-tagging-backend must be rust, legacy, or validate." >&2
@@ -487,6 +559,9 @@ if [[ -z "${ISOFORM_GTF}" ]]; then
 fi
 
 OUT_DIR="$(abspath_for_output "${OUT_DIR}")"
+if [[ -n "${ONT_TEMP_DIR}" ]]; then
+  ONT_TEMP_DIR="$(abspath_for_output "${ONT_TEMP_DIR}")"
+fi
 BARCODE_DIR="${OUT_DIR}/barcodes"
 require_cmd python3
 if [[ -z "${BARCODE_LIST_10BP}" ]]; then
@@ -532,8 +607,19 @@ fi
 require_cmd python3
 require_cmd samtools
 require_cmd minimap2
-if [[ "${GENE_TAGGING_BACKEND}" != "rust" || "${SKIP_ISOFORM}" -eq 0 ]]; then
+if [[ "${FEATURE_BACKEND}" == "legacy" && ( "${GENE_TAGGING_BACKEND}" != "rust" || "${SKIP_ISOFORM}" -eq 0 ) ]]; then
   require_cmd bedtools
+fi
+if [[ "${FEATURE_BACKEND}" == "ont" && "${UPSTREAM_ONLY}" -eq 0 ]]; then
+  require_cmd stringtie
+  require_cmd gffread
+  require_cmd gffcompare
+  if [[ "$(stringtie --version)" != "2.2.2" ]]; then
+    echo "[ERROR] ONT 3.3.0 comparison requires StringTie 2.2.2; update environment.yml." >&2
+    exit 1
+  fi
+  python_asset "${DOWNSTREAM_DIR}/ont_features.py" >/dev/null
+  python_asset "${DOWNSTREAM_DIR}/ont_matrices.py" >/dev/null
 fi
 require_file "${WHITELIST_3P}" "3p whitelist"
 require_file "${WHITELIST_5P}" "5p whitelist"
@@ -628,39 +714,37 @@ TAG_LOG="${LOG_DIR}/03_bam_tagging.log"
 GENE_LOG="${LOG_DIR}/04_gene.log"
 ISOFORM_LOG="${LOG_DIR}/05_isoform.log"
 QC_LOG="${LOG_DIR}/06_qc.log"
+ALIGNED_BAM="${ALIGN_DIR}/${SAMPLE_ID}.aligned.sorted.bam"
+ALIGNMENT_STREAMING=0
+ALIGNMENT_STREAM_ACTIVE=0
+ALIGNMENT_STREAM_PID=""
+ALIGNMENT_STAGE_TS=0
+ALIGNMENT_INPUT_MODE="persisted barcode/UMI-trimmed cDNA FASTQ"
+if [[ "${LIGHT_OUTPUT}" -eq 1 && "${SAVE_INTERMEDIATE}" -eq 0 ]]; then
+  ALIGNMENT_STREAMING=1
+  ALIGNMENT_INPUT_MODE="streamed barcode/UMI-trimmed cDNA FASTQ"
+  ALIGNMENT_FASTQ="${ALIGN_DIR}/${SAMPLE_ID}.cdna.fastq.pipe"
+else
+  ALIGNMENT_FASTQ="${ALIGN_DIR}/${SAMPLE_ID}.cdna.fastq.gz"
+fi
+
+if [[ "${UPSTREAM_ONLY}" -eq 0 && "${ALIGNMENT_STREAMING}" -eq 1 ]]; then
+  rm -f "${ALIGNMENT_FASTQ}"
+  mkfifo "${ALIGNMENT_FASTQ}"
+  exec 9<>"${ALIGNMENT_FASTQ}"
+  ALIGNMENT_STREAM_ACTIVE=1
+  trap cleanup_alignment_stream EXIT
+  ALIGNMENT_STAGE_TS=$(date +%s)
+  log "Streaming trimmed cDNA reads directly to minimap2 (no alignment FASTQ on disk)"
+  (
+    exec 9>&-
+    run_alignment_pipeline "${ALIGNMENT_FASTQ}" 2>&1 | tee "${ALIGN_LOG}"
+  ) &
+  ALIGNMENT_STREAM_PID=$!
+fi
 
 step_start
-log "Step 1/6: alignment-first minimap2 reference alignment"
-pushd "${ALIGN_DIR}" >/dev/null
-
-ALIGNMENT_STAGE_TS=$(date +%s)
-if minimap2 -ax splice -uf --MD -t "${THREADS}" \
-  --junc-bed "${JUNCTION_BED}" \
-  --secondary=no \
-  "${GENE_FASTA}" "${FULL_LENGTH_FASTQ}" \
-| samtools view --no-PG -b -t "${CHROM_SIZES}" - \
-| samtools sort --no-PG -@ "${THREADS}" -o "${SAMPLE_ID}.aligned.sorted.bam" - 2>&1 | tee "${ALIGN_LOG}"; then
-  ALIGNMENT_STAGE_STATUS=0
-else
-  ALIGNMENT_STAGE_STATUS=$?
-fi
-log "Stage alignment_pipeline (external) elapsed: $(($(date +%s) - ALIGNMENT_STAGE_TS))s" | tee -a "${ALIGN_LOG}"
-if (( ALIGNMENT_STAGE_STATUS != 0 )); then exit "${ALIGNMENT_STAGE_STATUS}"; fi
-
-ALIGNED_INDEX_TS=$(date +%s)
-if samtools index "${SAMPLE_ID}.aligned.sorted.bam" 2>&1 | tee -a "${ALIGN_LOG}"; then
-  ALIGNED_INDEX_STATUS=0
-else
-  ALIGNED_INDEX_STATUS=$?
-fi
-log "Stage aligned_bam_index (external) elapsed: $(($(date +%s) - ALIGNED_INDEX_TS))s" | tee -a "${ALIGN_LOG}"
-if (( ALIGNED_INDEX_STATUS != 0 )); then exit "${ALIGNED_INDEX_STATUS}"; fi
-
-popd >/dev/null
-step_end "Step 1/6"
-
-step_start
-log "Step 2/6: Flora dual-end barcode split, correction, merge, and cell assignment"
+log "Step 1/6: Flora barcode/UMI extraction, cDNA trimming, and cell assignment"
 MAIN_ARGS=(
   "${FULL_LENGTH_FASTQ}"
   --full-bc-whitelist-3p "${WHITELIST_3P}"
@@ -680,6 +764,9 @@ MAIN_ARGS=(
   --dominance_min "${DOMINANCE_MIN}"
   --drop_umiA_ratio_gt "${DROP_UMIA_RATIO_GT}"
 )
+if [[ "${UPSTREAM_ONLY}" -eq 0 ]]; then
+  MAIN_ARGS+=(--alignment-fastq "${ALIGNMENT_FASTQ}")
+fi
 if [[ -n "${PAIR_MIN}" ]]; then
   MAIN_ARGS+=(--PAIR_MIN "${PAIR_MIN}")
 fi
@@ -700,7 +787,10 @@ fi
 if [[ "${REQUIRE_PASS_BOTH_ENDS}" -eq 1 ]]; then
   MAIN_ARGS+=(--require_pass_both_ends)
 fi
-run_stage flora "${SCRIPT_DIR}/main.py" "${MAIN_ARGS[@]}" 2>&1 | tee "${UPSTREAM_LOG}"
+FLORA_TRIM_CACHE_DIR="${ONT_TEMP_DIR}" run_stage flora "${SCRIPT_DIR}/main.py" "${MAIN_ARGS[@]}" 2>&1 | tee "${UPSTREAM_LOG}"
+if [[ "${ALIGNMENT_STREAM_ACTIVE}" -eq 1 ]]; then
+  exec 9>&-
+fi
 KNEE_ARGS=(
   --counts-3p "${UPSTREAM_DIR}/barcode_counts_3p.tsv"
   --counts-5p "${UPSTREAM_DIR}/barcode_counts_5p.tsv"
@@ -714,7 +804,7 @@ if [[ "${REVCOMP_WHITELIST}" -eq 0 ]]; then
   KNEE_ARGS+=(--no-revcomp-whitelist)
 fi
 python3 "$(python_asset "${DOWNSTREAM_DIR}/generate_knee_plots.py")" "${KNEE_ARGS[@]}" 2>&1 | tee -a "${UPSTREAM_LOG}"
-step_end "Step 2/6"
+step_end "Step 1/6"
 
 READ_ASSIGNED_CELL="${UPSTREAM_DIR}/read_assigned_cell.csv"
 BARCODE_VALIDITY_SUMMARY="${UPSTREAM_DIR}/barcode_validity_summary.tsv"
@@ -750,6 +840,40 @@ if [[ "${UPSTREAM_ONLY}" -eq 1 ]]; then
 fi
 
 step_start
+log "Step 2/6: ONT-style minimap2 alignment of barcode/UMI-trimmed cDNA reads"
+if [[ "${ALIGNMENT_STREAMING}" -eq 1 ]]; then
+  if wait "${ALIGNMENT_STREAM_PID}"; then
+    ALIGNMENT_STAGE_STATUS=0
+  else
+    ALIGNMENT_STAGE_STATUS=$?
+  fi
+  ALIGNMENT_STREAM_PID=""
+  rm -f "${ALIGNMENT_FASTQ}"
+  ALIGNMENT_STREAM_ACTIVE=0
+  trap - EXIT
+else
+  require_file "${ALIGNMENT_FASTQ}" "barcode/UMI-trimmed alignment FASTQ"
+  ALIGNMENT_STAGE_TS=$(date +%s)
+  if run_alignment_pipeline "${ALIGNMENT_FASTQ}" 2>&1 | tee "${ALIGN_LOG}"; then
+    ALIGNMENT_STAGE_STATUS=0
+  else
+    ALIGNMENT_STAGE_STATUS=$?
+  fi
+fi
+log "Stage alignment_pipeline (external) elapsed: $(($(date +%s) - ALIGNMENT_STAGE_TS))s" | tee -a "${ALIGN_LOG}"
+if (( ALIGNMENT_STAGE_STATUS != 0 )); then exit "${ALIGNMENT_STAGE_STATUS}"; fi
+
+ALIGNED_INDEX_TS=$(date +%s)
+if samtools index "${ALIGNED_BAM}" 2>&1 | tee -a "${ALIGN_LOG}"; then
+  ALIGNED_INDEX_STATUS=0
+else
+  ALIGNED_INDEX_STATUS=$?
+fi
+log "Stage aligned_bam_index (external) elapsed: $(($(date +%s) - ALIGNED_INDEX_TS))s" | tee -a "${ALIGN_LOG}"
+if (( ALIGNED_INDEX_STATUS != 0 )); then exit "${ALIGNED_INDEX_STATUS}"; fi
+step_end "Step 2/6"
+
+step_start
 log "Step 3/6: Sockeye-style dual-end barcode/UMI tags on aligned BAM"
 pushd "${ALIGN_DIR}" >/dev/null
 
@@ -757,13 +881,14 @@ run_stage prepare_read_tags "${DOWNSTREAM_DIR}/prepare_read_tags.py" \
   --input "${READ_ASSIGNED_CELL}" \
   --output "${SAMPLE_ID}.read_tags.tsv" 2>&1 | tee "${TAG_LOG}"
 
-if [[ "${GENE_TAGGING_BACKEND}" != "rust" ]]; then
+if [[ "${FEATURE_BACKEND}" == "ont" || "${GENE_TAGGING_BACKEND}" != "rust" ]]; then
   run_stage add_cb_ur_tags "${DOWNSTREAM_DIR}/add_cb_ur_tags.py" \
     --bam "${SAMPLE_ID}.aligned.sorted.bam" \
     --tags "${SAMPLE_ID}.read_tags.tsv" \
     --output "${SAMPLE_ID}.filtered.cb_ur.sorted.bam" \
     --threads "${CLUSTER_THREADS}" 2>&1 | tee -a "${TAG_LOG}"
 
+  if [[ "${FEATURE_BACKEND}" == "legacy" ]]; then
   BAMTOBED_TS=$(date +%s)
   if bedtools bamtobed -i "${SAMPLE_ID}.filtered.cb_ur.sorted.bam" > "${SAMPLE_ID}.filtered.cb_ur.bed"; then
     BAMTOBED_STATUS=0
@@ -772,6 +897,7 @@ if [[ "${GENE_TAGGING_BACKEND}" != "rust" ]]; then
   fi
   log "Stage bamtobed (external) elapsed: $(($(date +%s) - BAMTOBED_TS))s" | tee -a "${TAG_LOG}"
   if (( BAMTOBED_STATUS != 0 )); then exit "${BAMTOBED_STATUS}"; fi
+  fi
 else
   log "Fused Rust gene tagging selected; intermediate CB/UR BAM and BED are skipped" | tee -a "${TAG_LOG}"
 fi
@@ -780,9 +906,28 @@ popd >/dev/null
 step_end "Step 3/6"
 
 step_start
-log "Step 4/6: Sockeye-style gene tagging, directional UMI clustering, and matrix generation"
+log "Step 4/6: ${FEATURE_BACKEND} feature assignment, directional UMI clustering, and matrix generation"
 pushd "${MATRIX_DIR}" >/dev/null
 
+if [[ "${FEATURE_BACKEND}" == "ont" ]]; then
+  ONT_ARGS=()
+  if [[ -n "${ONT_TEMP_DIR}" ]]; then
+    ONT_ARGS+=(--temp-dir "${ONT_TEMP_DIR}")
+  fi
+  if [[ "${SAVE_INTERMEDIATE}" -eq 1 || "${LIGHT_OUTPUT}" -eq 0 ]]; then
+    ONT_ARGS+=(--save-intermediate)
+  fi
+  python3 "$(python_asset "${DOWNSTREAM_DIR}/ont_features.py")" \
+    --bam "${ALIGN_DIR}/${SAMPLE_ID}.aligned.sorted.bam" \
+    --tagged-bam "${ALIGN_DIR}/${SAMPLE_ID}.filtered.cb_ur.sorted.bam" \
+    --genome "${GENE_FASTA}" --gtf "${ISOFORM_GTF}" \
+    --output-dir "${OUT_DIR}/transcriptome" --sample "${SAMPLE_ID}" \
+    --output-bam "${SAMPLE_ID}.filtered.cb_ur.gn.sorted.bam" \
+    --gene-assigns "${SAMPLE_ID}.filtered.read_gene_assigns.tsv" \
+    --transcript-assigns "${SAMPLE_ID}.read_transcript_assigns.tsv" \
+    --mapq "${GENE_ASSIGN_MAPQ}" --threads "${CLUSTER_THREADS}" --jobs "${ONT_JOBS}" \
+    --stringtie-opts="${STRINGTIE_OPTS}" "${ONT_ARGS[@]}" 2>&1 | tee "${GENE_LOG}"
+else
 if [[ "${GENE_TAGGING_BACKEND}" != "rust" ]]; then
   run_stage assign_genes "${DOWNSTREAM_DIR}/assign_genes.py" \
     --output "${SAMPLE_ID}.filtered.read_gene_assigns.tsv" \
@@ -836,6 +981,7 @@ if [[ "${GENE_TAGGING_BACKEND}" == "validate" ]]; then
   rmdir "${VALIDATE_DIR}"
   log "Gene-tag validation passed: assignments and SAM records are identical" | tee -a "${GENE_LOG}"
 fi
+fi
 
 run_stage cluster_umis_allbam "${DOWNSTREAM_DIR}/cluster_umis_allbam.py" \
   --output "${SAMPLE_ID}.filtered.tagged.sorted.bam" \
@@ -871,12 +1017,16 @@ else
   log "Step 5/6: transcript assignment and isoform matrix generation"
   pushd "${MATRIX_DIR}" >/dev/null
 
-  run_stage assign_transcripts "${DOWNSTREAM_DIR}/assign_transcripts.py" \
+  if [[ "${FEATURE_BACKEND}" == "legacy" ]]; then
+    run_stage assign_transcripts "${DOWNSTREAM_DIR}/assign_transcripts.py" \
     --output "${SAMPLE_ID}.read_transcript_assigns.tsv" \
     --mapq "${TRANSCRIPT_ASSIGN_MAPQ}" \
     --chunk_size "${TRANSCRIPT_ASSIGN_CHUNK_SIZE}" \
     "${SAMPLE_ID}.filtered.tagged.sorted.bam" \
     "${ISOFORM_GTF}" 2>&1 | tee "${ISOFORM_LOG}"
+  else
+    log "Reusing ONT joint transcript assignments from Step 4/6" | tee "${ISOFORM_LOG}"
+  fi
 
   run_stage isoform_expression "${DOWNSTREAM_DIR}/isoform_expression.py" \
     --output "${SAMPLE_ID}.isoform_expression.tsv" \
@@ -886,6 +1036,17 @@ else
   popd >/dev/null
 fi
 step_end "Step 5/6"
+
+if [[ "${FEATURE_BACKEND}" == "ont" ]]; then
+  ONT_MATRIX_ARGS=()
+  if [[ "${SKIP_ISOFORM}" -eq 0 ]]; then
+    ONT_MATRIX_ARGS+=(--transcript-tsv "${MATRIX_DIR}/${SAMPLE_ID}.isoform_expression.tsv")
+  fi
+  python3 "$(python_asset "${DOWNSTREAM_DIR}/ont_matrices.py")" \
+    --gene-tsv "${MATRIX_DIR}/${SAMPLE_ID}.gene_expression.tsv" \
+    --output-dir "${MATRIX_DIR}" --sample "${SAMPLE_ID}" \
+    "${ONT_MATRIX_ARGS[@]}" 2>&1 | tee -a "${ISOFORM_LOG}"
+fi
 
 step_start
 log "Step 6/6: RNA QC and saturation analysis"

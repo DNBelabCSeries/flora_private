@@ -255,7 +255,7 @@ def collect_records_for_contig(input_bam, chrom, args):
             gene = create_region_name(align, args)
 
         cell_gene_counter[(bc_corr, gene)] += 1
-        if cell_gene_counter[(bc_corr, gene)] <= args.cell_gene_max_reads:
+        if args.cell_gene_max_reads == 0 or cell_gene_counter[(bc_corr, gene)] <= args.cell_gene_max_reads:
             records.append((read_id, gene, bc_corr, umi_uncorr))
 
     bam.close()

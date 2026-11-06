@@ -33,7 +33,8 @@ export PYTHONUTF8=1
 已有环境时，用 `conda env update -n flora -f environment.yml` 代替创建命令，
 然后重新激活。必须使用 Python 3.11.x。
 `environment.yml` 包含构建工具和运行依赖；`environment.runtime.yml` 用于
-已打包的可执行文件；`requirements.txt` 只列出 Python 包。
+已打包的可执行文件；`requirements.txt` 只列出 Python 包。两个环境文件均已包含
+转录本重构与注释所需的 StringTie 2.2.2、`gffread` 和 `gffcompare`。
 
 编译前为 `rust-htslib`/`bindgen` 设置 libclang 路径。
 这仅是构建依赖，运行已打包的 Flora 不需要单独设置。
@@ -132,6 +133,26 @@ cat BUILD_INFO.txt
 RNA 聚类、QC、`qc/metrics_summary.xlsx`、日志和 HTML 报告。
 成功结束后删除可重建的 read-level 表、加标签前的 aligned BAM、assignment TSV；
 如果 `alignment/` 变空，也会移除该目录。
+
+新增输出如下：
+
+| 路径 | 内容 |
+| --- | --- |
+| `transcriptome/<sample>.transcriptome.fa.gz` | 重构的转录本序列。 |
+| `transcriptome/<sample>.transcriptome.gtf.gz` | 重构的转录本注释。 |
+| `transcriptome/tool_versions.json` | 实际工具版本。 |
+| `transcriptome/assignment_summary.json` | 基因、转录本分配状态计数。 |
+| `matrix/<sample>.gene_raw_feature_bc_matrix/` | 基因层面的整数 UMI 计数。 |
+| `matrix/<sample>.gene_processed_feature_bc_matrix/` | 过滤、归一化后的基因表达矩阵。 |
+| `matrix/<sample>.transcript_raw_feature_bc_matrix/` | 转录本层面的整数 UMI 计数。 |
+| `matrix/<sample>.transcript_processed_feature_bc_matrix/` | 过滤、归一化后的转录本表达矩阵。 |
+| `matrix/<sample>.matrix_processing.json` | 矩阵过滤参数及维度。 |
+
+每个 MEX 目录包含 `matrix.mtx.gz`、`features.tsv.gz` 和
+`barcodes.tsv.gz`（细胞 ID）。Processed 矩阵先按每细胞至少 200 个特征、
+每特征至少 3 个细胞、线粒体比例不超过 20% 过滤，再按每细胞 10,000 计数归一化并执行
+`log10(1+x)`。其中的细胞集合可能与报告的原始细胞判定不同。
+`--skip-isoform` 不输出转录本矩阵，原有 TSV 矩阵仍保留。
 
 | 选项 | 作用 |
 | --- | --- |

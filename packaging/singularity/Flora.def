@@ -54,6 +54,9 @@ From: flora-base-ubuntu22.04.sif
     test -x /opt/conda/envs/flora/bin/samtools
     test -x /opt/conda/envs/flora/bin/minimap2
     test -x /opt/conda/envs/flora/bin/bedtools
+    test -x /opt/conda/envs/flora/bin/stringtie
+    test -x /opt/conda/envs/flora/bin/gffread
+    test -x /opt/conda/envs/flora/bin/gffcompare
 
     /opt/conda/bin/conda clean -afy
     apt-get clean
@@ -98,3 +101,6 @@ From: flora-base-ubuntu22.04.sif
     /opt/conda/envs/flora/bin/samtools --version
     /opt/conda/envs/flora/bin/minimap2 --version
     /opt/conda/envs/flora/bin/bedtools --version
+    /opt/conda/envs/flora/bin/stringtie --version
+    /opt/conda/envs/flora/bin/gffread --version
+    /opt/conda/envs/flora/bin/gffcompare --version

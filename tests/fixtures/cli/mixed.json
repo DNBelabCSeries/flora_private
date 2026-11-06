@@ -57,7 +57,11 @@
     {"name":"--transcript-assign-mapq","aliases":[],"type":"int","required":false,"required_when":[],"default":30,"conflicts":[],"description":"Minimum transcript-assignment MAPQ."},
     {"name":"--transcript-assign-chunk-size","aliases":[],"type":"int","required":false,"required_when":[],"default":200000,"conflicts":[],"description":"Transcript-assignment chunk size."},
     {"name":"--ref-interval","aliases":[],"type":"int","required":false,"required_when":[],"default":1000,"conflicts":[],"description":"Reference lookup interval."},
-    {"name":"--cell-gene-max-reads","aliases":[],"type":"int","required":false,"required_when":[],"default":20000,"conflicts":[],"description":"Per-cell gene read cap."},
+    {"name":"--feature-backend","aliases":[],"type":"string","required":false,"required_when":[],"default":"ont","choices":["ont","legacy"],"conflicts":[],"description":"Joint ONT-style assignment or legacy GTF overlap."},
+    {"name":"--stringtie-opts","aliases":[],"type":"string","required":false,"required_when":[],"default":"-c 2","conflicts":[],"description":"Additional guided long-read assembly options."},
+    {"name":"--ont-jobs","aliases":[],"type":"int","required":false,"required_when":[],"default":1,"conflicts":[],"description":"Concurrent chromosome jobs sharing cluster-threads."},
+    {"name":"--ont-temp-dir","aliases":[],"type":"path","required":false,"required_when":[],"default":null,"conflicts":[],"description":"Scratch parent; defaults to system temp/TMPDIR."},
+    {"name":"--cell-gene-max-reads","aliases":[],"type":"int","required":false,"required_when":[],"default":0,"conflicts":[],"description":"Per-cell gene read cap; 0 is unlimited in ONT mode, legacy defaults to 20000."},
     {"name":"--python","aliases":[],"type":"path","required":false,"required_when":[],"default":null,"conflicts":[],"description":"Python interpreter for every Python workflow stage."},
     {"name":"--help","aliases":["-h"],"type":"bool","required":false,"required_when":[],"default":false,"conflicts":[],"description":"Print command help."},
     {"name":"--version","aliases":["-V"],"type":"bool","required":false,"required_when":[],"default":false,"conflicts":[],"description":"Print Flora version."}
